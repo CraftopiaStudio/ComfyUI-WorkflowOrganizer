@@ -1,0 +1,10 @@
+[project]
+name = "comfyui-workfloworganizer"
+version = "0.1.0"
+description = "Drag-and-drop workflow organization for the ComfyUI sidebar"
+license = "MIT"
+
+[tool.comfy]
+PublisherId = "craftopiastudio"
+DisplayName = "ComfyUI-WorkflowOrganizer"
+Icon = "assets/icon.png"
