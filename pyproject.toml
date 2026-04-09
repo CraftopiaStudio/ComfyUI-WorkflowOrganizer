@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-workfloworganizer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Drag-and-drop workflow organization for the ComfyUI sidebar"
 license = "MIT"
 
