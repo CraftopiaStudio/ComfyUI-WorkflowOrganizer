@@ -1,11 +1,14 @@
 [project]
 name = "comfyui-workfloworganizer"
-version = "0.1.1"
 description = "Drag-and-drop workflow organization for the ComfyUI sidebar"
-license = "MIT"
+version = "0.1.1"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/CraftopiaStudio/ComfyUI-WorkflowOrganizer"
 
 [tool.comfy]
 PublisherId = "craftopiastudio"
 DisplayName = "ComfyUI-WorkflowOrganizer"
-Icon = "assets/icon.png"
-Repository = "https://github.com/CraftopiaStudio/ComfyUI-WorkflowOrganizer"
+Icon = "https://raw.githubusercontent.com/CraftopiaStudio/ComfyUI-WorkflowOrganizer/main/assets/icon.png"
