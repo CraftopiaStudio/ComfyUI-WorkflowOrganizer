@@ -101,13 +101,16 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 - [x] Undo-snackbar verschijnt na elke move (slepen, "Move to…", naar root) — onderaan gecentreerd over de sidebar, verdwijnt na 6s
 - [x] Undo draait de verplaatsing terug (bestand: terug-move; map: terug-rename)
 - [x] Lange namen afgekapt; snackbar past binnen de sidebar-breedte
-- [ ] Delete-undo nog niet: vereist prullenbak-mechanisme (rmtree is destructief) — aparte stap
+### v0.6.0 — Folder delete naar prullenbak + undo ✅
+- [x] Delete Folder verplaatst de map naar een verborgen `.wfo_trash` (buiten workflows/, dus nooit in de tree) i.p.v. `rmtree`
+- [x] Undo-snackbar herstelt de map mét inhoud op de oorspronkelijke plek (nieuw `/wfo/trash/restore` endpoint)
+- [x] Prullenbak ruimt items ouder dan 7 dagen automatisch op (geen disk-bloat)
+- [x] Workflow-delete bewust aan ComfyUI's native delete gelaten (schoner, geen dubbele "Delete", geen risicovolle interceptie)
 
 ### Later / Ideeën
 
 **Features**
 - [ ] **Multi-select + bulk move** — meerdere workflows selecteren (Ctrl/Shift-klik) en in één keer verplaatsen/slepen. Vergt eigen selectie-state
-- [ ] **Delete naar prullenbak + undo** — delete naar een verborgen trash-map i.p.v. `rmtree`, zodat undo mogelijk wordt
 - [ ] **Map-kleuren of emoji** — visuele organisatie per map (vergt per-map metadata-opslag); puur cosmetisch
 
 **Robuustheid**
@@ -125,7 +128,7 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 
 ## Notities
 
-- Huidige versie: **v0.5.0**
+- Huidige versie: **v0.6.0**
 - Zero dependencies. JS-extensie + lichte Python-endpoints (geen zware nodes).
 - ComfyUI v0.3.0+ vereist (heeft `/userdata/{file}/move/{dest}` endpoint nodig).
 - **Python-wijzigingen vereisen een ComfyUI-herstart; JS-wijzigingen alleen een browser refresh.**

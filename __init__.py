@@ -9,8 +9,31 @@ import folder_paths
 import json
 import os
 import shutil
+import time
 
 WEB_DIRECTORY = "./js"
+
+TRASH_DIRNAME = ".wfo_trash"
+TRASH_MAX_AGE_DAYS = 7
+
+
+def _trash_dir(base):
+    """Hidden trash directory beside the workflows folder (never in the tree)."""
+    return os.path.join(base, TRASH_DIRNAME)
+
+
+def _prune_trash(trash):
+    """Remove trash entries older than TRASH_MAX_AGE_DAYS."""
+    if not os.path.isdir(trash):
+        return
+    cutoff = time.time() - TRASH_MAX_AGE_DAYS * 86400
+    for name in os.listdir(trash):
+        p = os.path.join(trash, name)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def _user_root():
@@ -103,17 +126,57 @@ async def delete_wfo_folder(request):
             return web.Response(status=404, text="Folder not found")
 
         if recursive:
-            shutil.rmtree(target)
-        else:
-            placeholder = os.path.join(target, "placeholder.json")
-            if os.path.exists(placeholder):
-                os.remove(placeholder)
-            contents = [f for f in os.listdir(target) if not f.startswith(".")]
-            if not contents:
-                try:
-                    os.rmdir(target)
-                except OSError:
-                    pass
+            # Move to a hidden trash dir instead of deleting, so it can be undone
+            trash = _trash_dir(base)
+            os.makedirs(trash, exist_ok=True)
+            _prune_trash(trash)
+            token = "%d_%s" % (int(time.time() * 1000), os.path.basename(target))
+            shutil.move(target, os.path.join(trash, token))
+            return web.json_response({"trash": token})
+
+        placeholder = os.path.join(target, "placeholder.json")
+        if os.path.exists(placeholder):
+            os.remove(placeholder)
+        contents = [f for f in os.listdir(target) if not f.startswith(".")]
+        if not contents:
+            try:
+                os.rmdir(target)
+            except OSError:
+                pass
+        return web.Response(status=200)
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+
+@PromptServer.instance.routes.post("/wfo/trash/restore")
+async def restore_trash(request):
+    """Move a trashed folder back to its original location (undo a delete)."""
+    try:
+        data = await request.json()
+        token = data.get("trash", "")
+        dest_rel = data.get("dest", "").replace("\\", "/").strip("/")
+        # token must be a single path segment (no traversal)
+        if not token or "/" in token or "\\" in token or ".." in token:
+            return web.Response(status=400, text="Invalid trash token")
+        if not dest_rel or ".." in dest_rel.split("/"):
+            return web.Response(status=400, text="Invalid path")
+
+        base = _get_user_base(request)
+        if not base:
+            return web.Response(status=404, text="Workflows directory not found")
+
+        src = os.path.join(_trash_dir(base), token)
+        if not os.path.isdir(src):
+            return web.Response(status=404, text="Trash entry not found")
+
+        target = _resolve_safe(base, dest_rel)
+        if not target:
+            return web.Response(status=403, text="Forbidden")
+        if os.path.exists(target):
+            return web.Response(status=409, text="Destination already exists")
+
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.move(src, target)
         return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))

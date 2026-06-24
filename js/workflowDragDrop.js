@@ -43,6 +43,17 @@ async function deleteFolder(folderPath, recursive = false) {
     const text = await resp.text();
     throw new Error(`Delete folder failed (${resp.status}): ${text}`);
   }
+  try { return await resp.json(); } catch (_) { return {}; }
+}
+
+// Restore a trashed folder back to destRel (relative to workflows/) — undo delete.
+async function restoreTrash(token, destRel) {
+  const resp = await api.fetchApi("/wfo/trash/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trash: token, dest: `workflows/${destRel}` }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
 }
 
 async function duplicateFolder(folderPath) {
@@ -781,9 +792,15 @@ function showFolderContextMenu(e, item) {
 
     const folderPath = buildPath(item);
     try {
-      await deleteFolder(`workflows/${folderPath}`, true);
+      const result = await deleteFolder(`workflows/${folderPath}`, true);
       try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder deleted", detail: label, life: 3000 }); } catch (_) {}
       await refreshWorkflowSidebar();
+      if (result && result.trash) {
+        registerUndo(`Deleted ${label}`, async () => {
+          await restoreTrash(result.trash, folderPath);
+          await refreshWorkflowSidebar();
+        });
+      }
     } catch (err) {
       try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
     }
