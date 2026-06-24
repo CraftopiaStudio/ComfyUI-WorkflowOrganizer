@@ -153,9 +153,13 @@ async function refreshWorkflowSidebar() {
 let contextMenu = null;
 let dragData = null;
 let rootDropBar = null;
+// Set true by a tree item's contextmenu handler so the panel-level handler knows
+// the right-click was on an item (not empty space) — reliable across DOM layouts.
+let itemContextActive = false;
 
 async function moveToRoot() {
   if (!dragData) return;
+  if (dragData.isFolder) { await moveFolderTo(""); return; }
   let fileName = dragData.name;
   let sourcePath = dragData.path;
   const movedElement = dragData.element;
@@ -168,6 +172,38 @@ async function moveToRoot() {
   try {
     await moveUserDataFile(src, dst);
     try { app.extensionManager?.toast?.add({ severity: "success", summary: "Moved to root", detail: fileName, life: 3000 }); } catch (_) {}
+    await refreshWorkflowSidebar();
+    if (movedElement) movedElement.style.display = "none";
+  } catch (err) {
+    try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
+  }
+}
+
+// Move the dragged folder (with all its contents) into destParentRel ("" = root),
+// relative to the workflows dir. A move is an atomic os.rename to a new path.
+async function moveFolderTo(destParentRel) {
+  if (!dragData || !dragData.isFolder) return;
+  const srcRel = dragData.path;
+  const name = dragData.name;
+  const movedElement = dragData.element;
+  dragData = null;
+
+  const srcParent = srcRel.includes("/") ? srcRel.slice(0, srcRel.lastIndexOf("/")) : "";
+  if (srcParent === destParentRel) return;                          // already there — no-op
+  if (destParentRel === srcRel || destParentRel.startsWith(srcRel + "/")) {
+    try { app.extensionManager?.toast?.add({ severity: "warn", summary: "Can't move folder into itself", life: 4000 }); } catch (_) {}
+    return;
+  }
+
+  const dstRel = destParentRel ? `${destParentRel}/${name}` : name;
+  try {
+    const resp = await api.fetchApi("/wfo/folder/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old: `workflows/${srcRel}`, new: `workflows/${dstRel}` }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder moved", detail: name, life: 3000 }); } catch (_) {}
     await refreshWorkflowSidebar();
     if (movedElement) movedElement.style.display = "none";
   } catch (err) {
@@ -268,6 +304,64 @@ function removeContextMenu() {
   if (contextMenu) { contextMenu.remove(); contextMenu = null; }
 }
 
+// Latest known-good native menu metrics. The folder menu has no native menu to
+// read from, so it reuses what the file menu measured.
+let nativeMenuMetrics = null;
+
+function readMenuMetrics(realMenu) {
+  if (!realMenu) return null;
+  const textSample = realMenu.querySelector(
+    ".p-menuitem-text, .p-contextmenu-item-label, .p-menuitem-link"
+  );
+  if (!textSample) return null;
+  const cs = getComputedStyle(textSample);
+  const iconSample = realMenu.querySelector(".p-menuitem-icon");
+  const iconCs = iconSample ? getComputedStyle(iconSample) : null;
+  const linkSample = realMenu.querySelector(".p-menuitem-link, .p-contextmenu-item-link, .p-menuitem-content");
+  const ls = linkSample ? getComputedStyle(linkSample) : null;
+  return {
+    fontFamily: cs.fontFamily, fontSize: cs.fontSize, fontWeight: cs.fontWeight,
+    letterSpacing: cs.letterSpacing, lineHeight: cs.lineHeight, color: cs.color,
+    iconFontSize: iconCs ? iconCs.fontSize : cs.fontSize,
+    iconColor: iconCs ? iconCs.color : null,
+    padTop: ls ? ls.paddingTop : null, padBottom: ls ? ls.paddingBottom : null,
+    padLeft: ls ? ls.paddingLeft : null, padRight: ls ? ls.paddingRight : null,
+  };
+}
+
+function applyMenuMetrics(menuEl, m) {
+  if (!m) return;
+  menuEl.querySelectorAll(".wfo-context-item, .wfo-label").forEach((el) => {
+    el.style.fontFamily = m.fontFamily;
+    el.style.fontSize = m.fontSize;
+    el.style.fontWeight = m.fontWeight;
+    el.style.letterSpacing = m.letterSpacing;
+    el.style.lineHeight = m.lineHeight;
+    if (!el.closest(".wfo-danger")) el.style.color = m.color;
+  });
+  menuEl.querySelectorAll(".wfo-icon").forEach((el) => {
+    el.style.fontSize = m.iconFontSize;
+    if (m.iconColor && !el.closest(".wfo-danger")) el.style.color = m.iconColor;
+  });
+  if (m.padTop) {
+    menuEl.querySelectorAll(".wfo-context-item").forEach((el) => {
+      el.style.paddingTop = m.padTop;
+      el.style.paddingBottom = m.padBottom;
+      el.style.paddingLeft = m.padLeft;
+      el.style.paddingRight = m.padRight;
+    });
+  }
+}
+
+// Match our injected items to ComfyUI's native menu (font, colour, size, padding).
+// Reads the live native menu when present and caches it; the folder menu (which
+// has no native menu) falls back to the cached metrics.
+function applyNativeMenuFont(menuEl, realMenu) {
+  const m = readMenuMetrics(realMenu);
+  if (m) nativeMenuMetrics = m;
+  applyMenuMetrics(menuEl, nativeMenuMetrics);
+}
+
 function inlineRenameInTree(folderItem, onConfirm) {
   const labelEl = folderItem.querySelector(".p-tree-node-label");
   if (!labelEl) return;
@@ -349,6 +443,51 @@ function transformMenuToInput(menu, defaultValue, onConfirm, label = "Name:") {
   });
 }
 
+// Build a menu item that creates a folder under parentRel (relative to the
+// workflows dir; "" = root). label/icon/prompt are customizable.
+function makeNewFolderItem(menu, parentRel, label = "New Folder", icon = "pi-folder-plus", prompt = "New folder name:") {
+  const newFolder = document.createElement("div");
+  newFolder.className = "wfo-context-item";
+  newFolder.innerHTML = `<span class="pi ${icon} wfo-icon"></span><span class="wfo-label">${label}</span>`;
+  newFolder.addEventListener("mousedown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    transformMenuToInput(menu, "", async (folderName) => {
+      const name = folderName.replace(/[/\\]/g, "");
+      if (!name) return;
+      const rel = parentRel ? `${parentRel}/${name}` : name;
+      try {
+        await createFolder(`workflows/${rel}`);
+        try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder created", detail: name, life: 3000 }); } catch (_) {}
+        await refreshWorkflowSidebar();
+      } catch (err) {
+        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
+      }
+    }, prompt);
+  });
+  return newFolder;
+}
+
+// Context menu for empty sidebar space — lets you create a root folder even when
+// there are no files/folders to right-click.
+function showEmptyAreaMenu(e) {
+  removeContextMenu();
+  const menu = document.createElement("div");
+  menu.className = "wfo-context-menu wfo-standalone";
+  const cursorX = e.clientX;
+  const cursorY = e.clientY;
+  setTimeout(() => {
+    menu.style.left = cursorX + "px";
+    menu.style.top = cursorY + "px";
+    applyNativeMenuFont(menu, document.querySelector(".p-contextmenu, .p-tieredmenu"));
+  }, 10);
+  menu.appendChild(makeNewFolderItem(menu, ""));
+  document.body.appendChild(menu);
+  contextMenu = menu;
+  const closeHandler = () => { removeContextMenu(); document.removeEventListener("mousedown", closeHandler); };
+  setTimeout(() => document.addEventListener("mousedown", closeHandler), 100);
+}
+
 function showContextMenu(e, item) {
   removeContextMenu();
   const menu = document.createElement("div");
@@ -365,6 +504,7 @@ function showContextMenu(e, item) {
         menu.style.left = e.clientX + "px";
         menu.style.top = e.clientY + "px";
     }
+    applyNativeMenuFont(menu, realMenu);
   }, 10);
 
   const moveToRoot = document.createElement("div");
@@ -394,25 +534,7 @@ function showContextMenu(e, item) {
     removeContextMenu();
   });
 
-  const newFolder = document.createElement("div");
-  newFolder.className = "wfo-context-item";
-  newFolder.innerHTML = `<span class="pi pi-folder-plus wfo-icon"></span><span class="wfo-label">New Folder</span>`;
-
-  newFolder.addEventListener("mousedown", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    transformMenuToInput(menu, "", async (folderName) => {
-      const name = folderName.replace(/[/\\]/g, "");
-      if (!name) return;
-      try {
-        await createFolder(`workflows/${name}`);
-        try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder created", detail: name, life: 3000 }); } catch (_) {}
-        await refreshWorkflowSidebar();
-      } catch (err) {
-        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
-      }
-    }, "New folder name:");
-  });
+  const newFolder = makeNewFolderItem(menu, "");
 
   document.body.appendChild(menu);
   menu.appendChild(moveToRoot);
@@ -426,19 +548,17 @@ function showContextMenu(e, item) {
 function showFolderContextMenu(e, item) {
   removeContextMenu();
   const menu = document.createElement("div");
-  menu.className = "wfo-context-menu";
+  menu.className = "wfo-context-menu wfo-standalone";
 
+  // A folder has no native ComfyUI menu, so position at the cursor — never align
+  // to a leftover native menu from a previous (file) right-click.
+  const cursorX = e.clientX;
+  const cursorY = e.clientY;
   setTimeout(() => {
-    const realMenu = document.querySelector(".p-contextmenu, .p-tieredmenu");
-    if (realMenu) {
-      const rect = realMenu.getBoundingClientRect();
-      menu.style.left = rect.left + "px";
-      menu.style.top = rect.bottom + "px";
-      menu.style.width = rect.width + "px";
-    } else {
-      menu.style.left = e.clientX + "px";
-      menu.style.top = e.clientY + "px";
-    }
+    menu.style.left = cursorX + "px";
+    menu.style.top = cursorY + "px";
+    // realMenu (if any leftover) only feeds the font cache; harmless if stale
+    applyNativeMenuFont(menu, document.querySelector(".p-contextmenu, .p-tieredmenu"));
   }, 10);
 
   const renameFolder = document.createElement("div");
@@ -515,9 +635,14 @@ function showFolderContextMenu(e, item) {
     }
   });
 
+  const newFolderRoot = makeNewFolderItem(menu, "", "New Folder");
+  const newSubFolder = makeNewFolderItem(menu, buildPath(item), "New Sub Folder", "pi-folder-plus", "New subfolder name:");
+
   document.body.appendChild(menu);
   menu.appendChild(renameFolder);
   menu.appendChild(duplicateFolder_);
+  menu.appendChild(newFolderRoot);
+  menu.appendChild(newSubFolder);
   menu.appendChild(deleteFolder_);
   contextMenu = menu;
 
@@ -563,7 +688,7 @@ function attachDragHandlers(container) {
         const path = buildPath(item);
         const name = getLabel(item);
         if (!path || !name) { e.preventDefault(); return; }
-        dragData = { path, name, element: item };
+        dragData = { path, name, element: item, isFolder: false };
         e.dataTransfer.effectAllowed = "move";
         contentEl.style.opacity = "0.4";
         setTimeout(() => showRootDropBar(container), 0);
@@ -576,6 +701,7 @@ function attachDragHandlers(container) {
       });
       contentEl.addEventListener("contextmenu", (e) => {
         e.preventDefault();
+        itemContextActive = true;
         showContextMenu(e, item);
       });
     }
@@ -583,10 +709,48 @@ function attachDragHandlers(container) {
     if (isFolder(item)) {
       contentEl.addEventListener("contextmenu", (e) => {
         e.preventDefault();
+        itemContextActive = true;
         showFolderContextMenu(e, item);
       });
+
+      // A folder is also a drag source (move folder + contents into another folder)
+      contentEl.setAttribute("draggable", "true");
+      contentEl.addEventListener("dragstart", (e) => {
+        const path = buildPath(item);
+        const name = getLabel(item);
+        if (!path || !name) { e.preventDefault(); return; }
+        dragData = { path, name, element: item, isFolder: true };
+        e.dataTransfer.effectAllowed = "move";
+        contentEl.style.opacity = "0.4";
+        setTimeout(() => showRootDropBar(container), 0);
+      });
+      contentEl.addEventListener("dragend", () => {
+        contentEl.style.opacity = "1";
+        dragData = null;
+        container.querySelectorAll(".wfo-drop-highlight").forEach((el) => el.classList.remove("wfo-drop-highlight"));
+        hideRootDropBar();
+      });
+
+      // Is this folder a valid drop target for the current folder drag?
+      const isInvalidFolderTarget = () => {
+        if (!dragData || !dragData.isFolder) return false;
+        const targetPath = buildPath(item);
+        // Itself or one of its own descendants
+        if (targetPath === dragData.path || targetPath.startsWith(dragData.path + "/")) return true;
+        // The folder it already lives in (dropping here would be a no-op)
+        const srcParent = dragData.path.includes("/")
+          ? dragData.path.slice(0, dragData.path.lastIndexOf("/"))
+          : "";
+        return targetPath === srcParent;
+      };
+
       contentEl.addEventListener("dragover", (e) => {
         if (!dragData) return;
+        if (isInvalidFolderTarget()) {
+          e.dataTransfer.dropEffect = "none";
+          contentEl.classList.remove("wfo-drop-highlight");
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         contentEl.classList.add("wfo-drop-highlight");
@@ -598,9 +762,14 @@ function attachDragHandlers(container) {
         contentEl.classList.remove("wfo-drop-highlight");
         if (!dragData) return;
 
+        const folderPath = buildPath(item);
+
+        // Folder dropped onto another folder → move folder + contents
+        if (dragData.isFolder) { await moveFolderTo(folderPath); return; }
+
+        // File dropped onto a folder → move workflow
         let sourcePath = dragData.path;
         let fileName = dragData.name;
-        const folderPath = buildPath(item);
         if (!fileName.endsWith(".json")) { fileName += ".json"; sourcePath += ".json"; }
         const destPath = folderPath + "/" + fileName;
 
@@ -663,18 +832,24 @@ function injectStyles() {
       color: #fff;
     }
     .wfo-drop-highlight { background-color: var(--content-hover-bg, #222) !important; outline: 1px dashed var(--p-primary-color, #4a9eff); border-radius: 4px; }
-    .wfo-context-menu { 
-        position: fixed; 
-        z-index: 1000000; 
-        background: var(--comfy-menu-bg, #171718); 
-        border: 1px solid var(--border-color, #4e4e4e); 
+    .wfo-context-menu {
+        position: fixed;
+        z-index: 1000000;
+        background: var(--comfy-menu-bg, #171718);
+        border: 1px solid var(--border-color, #4e4e4e);
         border-top: none;
-        border-bottom-left-radius: 4px; 
-        border-bottom-right-radius: 4px; 
-        padding: 0; 
-        box-shadow: var(--bar-shadow, 0 4px 12px rgba(0,0,0,0.5)); 
+        border-bottom-left-radius: 4px;
+        border-bottom-right-radius: 4px;
+        padding: 0;
+        box-shadow: var(--bar-shadow, 0 4px 12px rgba(0,0,0,0.5));
         font-family: var(--comfy-font-family, Inter, Arial, sans-serif);
         box-sizing: border-box;
+    }
+    /* Standalone menus (folder / empty-area) have no native menu above them */
+    .wfo-context-menu.wfo-standalone {
+        border-top: 1px solid var(--border-color, #4e4e4e);
+        border-radius: 4px;
+        min-width: 180px;
     }
     .wfo-context-item { 
         padding: 8px 12px; 
@@ -809,6 +984,24 @@ app.registerExtension({
         attachDragHandlers(panel);
         ensurePlaceholders();
         loadPlaceholderFolders().then(() => applyPlaceholderBadges(panel));
+        // Right-click on empty sidebar space → create a root folder.
+        // Climb to the full-height sidebar container (same column width as the
+        // tree) so empty space below the list is covered too.
+        const panelW = panel.getBoundingClientRect().width;
+        let shell = panel;
+        let p = panel.parentElement;
+        while (p && Math.abs(p.getBoundingClientRect().width - panelW) < 40) {
+          shell = p;
+          p = p.parentElement;
+        }
+        // Item handlers set itemContextActive; if they did, this was on an item.
+        shell.addEventListener("contextmenu", (e) => {
+          if (itemContextActive) { itemContextActive = false; return; }
+          // Ignore the search box, headers, buttons, and any tree item
+          if (e.target.closest("input, textarea, button, [role='treeitem'], .p-inputtext, [class*='search']")) return;
+          e.preventDefault();
+          showEmptyAreaMenu(e);
+        });
         const treeObserver = new MutationObserver(() => {
           attachDragHandlers(panel);
           applyPlaceholderBadges(panel);

@@ -78,10 +78,17 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 - [x] No-op drops afgevangen (bestand op eigen map of al in root → niets gebeurt, bestand verdwijnt niet)
 - [x] Code review: alle HTTP via `api.fetchApi` (werkt achter sub-pad/auth), dode code verwijderd, `deleteFolder` gooit nu errors
 
+### v0.3.0 — Nested moves + menu-polish ✅
+- [x] Map (met inhoud) in een andere map slepen — atomische `os.rename` (hergebruik rename-endpoint)
+- [x] Map naar root slepen via de drop-bar werkt nu ook voor mappen
+- [x] Guards: map op zichzelf / in eigen submap = geweigerd; map waar hij al zit = stille no-op; doel bestaat al = nette 409
+- [x] Highlight alleen op mappen waar een echte move gebeurt (niet op self/descendant/huidige ouder)
+- [x] Context-menu's nemen font, kleur, grootte én rijhoogte over van ComfyUI's native menu (met cache voor het folder-menu dat geen native menu heeft)
+- [x] Folder-menu positioneert op de cursor i.p.v. een verouderd native menu van een vorige rechtsklik
+- [x] "New Folder" overal: lege-ruimte rechtsklik (root, werkt ook bij lege root), file-menu (root), folder-menu (root + "New Sub Folder")
+
 ### Later / Ideeën
-- [ ] Nested moves: map → map slepen
 - [ ] Multi-user: `_get_user_base` pakt nu de eerste user-map; voor multi-user setups consistenter maken
-- [ ] `findBrowseLabel`-restanten weg (al vervangen door thema-bg cover) — opruimen indien nog aanwezig
 - [ ] Werkt alleen met de default Workflows sidebar — third-party panel support onderzoeken
 - [ ] Sidebar DOM-stabiliteit: kan breken bij ComfyUI frontend-updates (PrimeVue class-namen)
 
@@ -97,7 +104,7 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 
 ## Notities
 
-- Huidige versie: **v0.2.5**
+- Huidige versie: **v0.3.0**
 - Zero dependencies. JS-extensie + lichte Python-endpoints (geen zware nodes).
 - ComfyUI v0.3.0+ vereist (heeft `/userdata/{file}/move/{dest}` endpoint nodig).
 - **Python-wijzigingen vereisen een ComfyUI-herstart; JS-wijzigingen alleen een browser refresh.**
