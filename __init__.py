@@ -13,9 +13,34 @@ import shutil
 WEB_DIRECTORY = "./js"
 
 
-def _get_user_base():
-    """Return the first user directory that has a workflows folder."""
-    user_root = os.path.join(folder_paths.base_path, "user")
+def _user_root():
+    """Path to ComfyUI's user directory (handles older/newer versions)."""
+    try:
+        return folder_paths.get_user_directory()
+    except Exception:
+        return os.path.join(folder_paths.base_path, "user")
+
+
+def _get_user_base(request=None):
+    """Return the directory of the user making the request.
+
+    Multi-user aware: when a request is given, ask ComfyUI's own UserManager
+    which user it belongs to (the same mechanism the native userdata endpoints
+    use). Falls back to the first user dir that has a workflows folder, which is
+    correct for the common single-user ('default') setup.
+    """
+    user_root = _user_root()
+
+    if request is not None:
+        try:
+            user_id = PromptServer.instance.user_manager.get_request_user_id(request)
+            if user_id:
+                cand = os.path.join(user_root, user_id)
+                if os.path.isdir(cand):
+                    return cand
+        except Exception:
+            pass
+
     if not os.path.isdir(user_root):
         return None
     for uid in os.listdir(user_root):
@@ -41,7 +66,7 @@ async def create_wfo_folder(request):
         if not rel or ".." in rel.split("/"):
             return web.Response(status=400, text="Invalid path")
 
-        base = _get_user_base()
+        base = _get_user_base(request)
         if not base:
             return web.Response(status=404, text="Workflows directory not found")
 
@@ -69,29 +94,27 @@ async def delete_wfo_folder(request):
         if not rel or ".." in rel.split("/"):
             return web.Response(status=400, text="Invalid path")
 
-        user_root = os.path.join(folder_paths.base_path, "user")
-        if not os.path.isdir(user_root):
-            return web.Response(status=404, text="User directory not found")
+        base = _get_user_base(request)
+        if not base:
+            return web.Response(status=404, text="Workflows directory not found")
 
-        for uid in os.listdir(user_root):
-            base = os.path.join(user_root, uid)
-            target = _resolve_safe(base, rel)
-            if target and os.path.isdir(target):
-                if recursive:
-                    shutil.rmtree(target)
-                else:
-                    placeholder = os.path.join(target, "placeholder.json")
-                    if os.path.exists(placeholder):
-                        os.remove(placeholder)
-                    contents = [f for f in os.listdir(target) if not f.startswith(".")]
-                    if not contents:
-                        try:
-                            os.rmdir(target)
-                        except OSError:
-                            pass
-                return web.Response(status=200)
+        target = _resolve_safe(base, rel)
+        if not target or not os.path.isdir(target):
+            return web.Response(status=404, text="Folder not found")
 
-        return web.Response(status=404, text="Folder not found")
+        if recursive:
+            shutil.rmtree(target)
+        else:
+            placeholder = os.path.join(target, "placeholder.json")
+            if os.path.exists(placeholder):
+                os.remove(placeholder)
+            contents = [f for f in os.listdir(target) if not f.startswith(".")]
+            if not contents:
+                try:
+                    os.rmdir(target)
+                except OSError:
+                    pass
+        return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
@@ -102,7 +125,7 @@ async def ensure_placeholders(request):
     Only touches folders that actually exist on disk — never recreates a
     renamed or deleted folder. Returns how many placeholders were created."""
     try:
-        base = _get_user_base()
+        base = _get_user_base(request)
         if not base:
             return web.json_response({"created": 0})
 
@@ -135,7 +158,7 @@ async def rename_wfo_folder(request):
         if not old_rel or not new_rel or ".." in old_rel.split("/") or ".." in new_rel.split("/"):
             return web.Response(status=400, text="Invalid path")
 
-        base = _get_user_base()
+        base = _get_user_base(request)
         if not base:
             return web.Response(status=404, text="Workflows directory not found")
 
@@ -162,7 +185,7 @@ async def copy_wfo_folder(request):
         if not rel or ".." in rel.split("/"):
             return web.Response(status=400, text="Invalid path")
 
-        base = _get_user_base()
+        base = _get_user_base(request)
         if not base:
             return web.Response(status=404, text="Workflows directory not found")
 

@@ -468,6 +468,143 @@ function makeNewFolderItem(menu, parentRel, label = "New Folder", icon = "pi-fol
   return newFolder;
 }
 
+// All folder paths (relative to workflows/) from the server — independent of
+// which folders are currently expanded in the tree.
+async function getAllFolders() {
+  const folders = new Set();
+  try {
+    const resp = await api.fetchApi("/userdata?dir=workflows&recurse=true&split=false");
+    if (resp.ok) {
+      const files = await resp.json();
+      for (const f of files) {
+        const rel = f.replace(/^workflows\//, "").replace(/\\/g, "/");
+        const parts = rel.split("/");
+        for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join("/"));
+      }
+    }
+  } catch (_) {}
+  return [...folders].sort((a, b) => a.localeCompare(b));
+}
+
+// Turn a context menu into a scrollable "Move to:" folder picker. isExcluded(rel)
+// hides invalid destinations; currentRel is shown greyed/disabled (the item's
+// current location); onPick(rel) runs the move ("" = root).
+async function transformMenuToFolderList(menu, { isExcluded, currentRel, onPick }) {
+  menu.innerHTML = "";
+  menu.classList.add("wfo-standalone");
+  menu.style.maxHeight = "340px";
+  menu.style.overflowY = "auto";
+  menu.style.overflowX = "hidden";
+  menu.style.width = "240px";
+
+  const heading = document.createElement("div");
+  heading.className = "wfo-input-label";
+  heading.textContent = "Move to:";
+  heading.style.padding = "6px 10px 4px";
+  menu.appendChild(heading);
+
+  const folders = await getAllFolders();
+  const entries = [{ rel: "", name: "Root", depth: 0, icon: "pi-home" }];
+  for (const f of folders) {
+    entries.push({ rel: f, name: f.split("/").pop(), depth: f.split("/").length, icon: "pi-folder" });
+  }
+
+  let any = false;
+  for (const entry of entries) {
+    if (isExcluded && isExcluded(entry.rel)) continue;
+    const isCurrent = entry.rel === currentRel;
+    const row = document.createElement("div");
+    row.className = "wfo-context-item";
+    row.title = isCurrent ? `${entry.rel || "Root"} (current)` : (entry.rel || "Root");
+    row.innerHTML =
+      `<span class="pi ${entry.icon} wfo-icon" style="margin-left:${entry.depth * 12}px"></span>` +
+      `<span class="wfo-label">${entry.name}</span>` +
+      (isCurrent ? `<span class="wfo-current-tag">current</span>` : "");
+    if (isCurrent) {
+      row.style.opacity = "0.45";
+      row.style.cursor = "default";
+    } else {
+      any = true;
+      row.addEventListener("mousedown", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        removeContextMenu();
+        await onPick(entry.rel);
+      });
+    }
+    menu.appendChild(row);
+  }
+  if (!any) {
+    const empty = document.createElement("div");
+    empty.className = "wfo-input-hint";
+    empty.style.padding = "6px 10px";
+    empty.textContent = "No other folders";
+    menu.appendChild(empty);
+  }
+  applyMenuMetrics(menu, nativeMenuMetrics);
+}
+
+// Move a workflow file into destRel ("" = root).
+async function moveFileToFolder(item, destRel) {
+  let fileName = getLabel(item);
+  let sourcePath = buildPath(item);
+  if (!fileName.endsWith(".json")) { fileName += ".json"; sourcePath += ".json"; }
+  const prefix = "workflows/";
+  const src = sourcePath.startsWith(prefix) ? sourcePath : prefix + sourcePath;
+  const dst = prefix + (destRel ? destRel + "/" : "") + fileName;
+  if (src === dst) return;
+  try {
+    await moveUserDataFile(src, dst);
+    if (destRel) await deleteUserDataFile(`workflows/${destRel}/placeholder.json`);
+    try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow moved", detail: destRel || "Root", life: 3000 }); } catch (_) {}
+    await refreshWorkflowSidebar();
+  } catch (err) {
+    try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
+  }
+}
+
+// Move a folder (with contents) into destRel ("" = root) via atomic rename.
+async function moveFolderToFolder(item, destRel) {
+  const srcRel = buildPath(item);
+  const name = getLabel(item);
+  const dstRel = destRel ? `${destRel}/${name}` : name;
+  try {
+    const resp = await api.fetchApi("/wfo/folder/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old: `workflows/${srcRel}`, new: `workflows/${dstRel}` }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder moved", detail: destRel || "Root", life: 3000 }); } catch (_) {}
+    await refreshWorkflowSidebar();
+  } catch (err) {
+    try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
+  }
+}
+
+// Build a "Move to…" menu item that opens the folder picker for the given item.
+function makeMoveToItem(menu, item, isFolderItem) {
+  const moveTo = document.createElement("div");
+  moveTo.className = "wfo-context-item";
+  moveTo.innerHTML = `<span class="pi pi-arrow-right wfo-icon"></span><span class="wfo-label">Move to…</span>`;
+  moveTo.addEventListener("mousedown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const srcRel = buildPath(item);
+    const currentParent = srcRel.includes("/") ? srcRel.slice(0, srcRel.lastIndexOf("/")) : "";
+    transformMenuToFolderList(menu, {
+      currentRel: currentParent,
+      isExcluded: (rel) => {
+        // Only hide truly invalid targets (a folder into itself or a descendant)
+        if (isFolderItem) return rel === srcRel || rel.startsWith(srcRel + "/");
+        return false;
+      },
+      onPick: (rel) => isFolderItem ? moveFolderToFolder(item, rel) : moveFileToFolder(item, rel),
+    });
+  });
+  return moveTo;
+}
+
 // Context menu for empty sidebar space — lets you create a root folder even when
 // there are no files/folders to right-click.
 function showEmptyAreaMenu(e) {
@@ -507,37 +644,11 @@ function showContextMenu(e, item) {
     applyNativeMenuFont(menu, realMenu);
   }, 10);
 
-  const moveToRoot = document.createElement("div");
-  moveToRoot.className = "wfo-context-item";
-  moveToRoot.innerHTML = `<span class="pi pi-arrow-up wfo-icon"></span><span class="wfo-label">Move to root</span>`;
-
-  // Klik event op de hele container
-  moveToRoot.addEventListener("mousedown", async (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    
-    let fileName = getLabel(item);
-    let sourcePath = buildPath(item);
-    if (!fileName.endsWith(".json")) { fileName += ".json"; sourcePath += ".json"; }
-    
-    try {
-      const prefix = "workflows/";
-      const src = sourcePath.startsWith(prefix) ? sourcePath : prefix + sourcePath;
-      const dst = prefix + fileName;
-      await moveUserDataFile(src, dst);
-      try { app.extensionManager?.toast?.add({ severity: "success", summary: "Success", detail: `Moved to root`, life: 3000 }); } catch (_) {}
-      await refreshWorkflowSidebar();
-      item.style.display = "none";
-    } catch (err) {
-      try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
-    }
-    removeContextMenu();
-  });
-
+  const moveTo = makeMoveToItem(menu, item, false);
   const newFolder = makeNewFolderItem(menu, "");
 
   document.body.appendChild(menu);
-  menu.appendChild(moveToRoot);
+  menu.appendChild(moveTo);
   menu.appendChild(newFolder);
   contextMenu = menu;
   
@@ -635,12 +746,14 @@ function showFolderContextMenu(e, item) {
     }
   });
 
+  const moveTo = makeMoveToItem(menu, item, true);
   const newFolderRoot = makeNewFolderItem(menu, "", "New Folder");
   const newSubFolder = makeNewFolderItem(menu, buildPath(item), "New Sub Folder", "pi-folder-plus", "New subfolder name:");
 
   document.body.appendChild(menu);
   menu.appendChild(renameFolder);
   menu.appendChild(duplicateFolder_);
+  menu.appendChild(moveTo);
   menu.appendChild(newFolderRoot);
   menu.appendChild(newSubFolder);
   menu.appendChild(deleteFolder_);
@@ -851,29 +964,48 @@ function injectStyles() {
         border-radius: 4px;
         min-width: 180px;
     }
-    .wfo-context-item { 
-        padding: 8px 12px; 
-        font-size: 16.5px; 
-        color: var(--input-text, #fff); 
-        cursor: pointer; 
-        display: flex; 
-        align-items: center; 
-        transition: background 0.1s; 
+    .wfo-context-item {
+        padding: 8px 12px;
+        font-size: 16.5px;
+        color: var(--input-text, #fff);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        transition: background 0.1s;
         width: 100%;
         box-sizing: border-box;
+        overflow: hidden;
     }
     .wfo-context-item:hover { background: var(--content-hover-bg, #222); color: var(--content-hover-fg, #fff); }
-    .wfo-icon { 
-        font-size: 16.5px; 
-        color: var(--descrip-text, #999); 
-        width: 16px; 
-        text-align: center; 
+    .wfo-icon {
+        font-size: 16.5px;
+        color: var(--descrip-text, #999);
+        width: 16px;
+        flex: 0 0 auto;
+        text-align: center;
         margin-left: 2px; /* Dit schuift de pijl die laatste pixels naar rechts */
         margin-right: 10px; /* Ruimte tussen pijl en tekst */
         pointer-events: none;
     }
     .wfo-label {
         font-weight: 400;
+        pointer-events: none;
+        flex: 1 1 auto;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .wfo-current-tag {
+        font-size: 9px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--descrip-text, #999);
+        border: 1px solid var(--border-color, #4e4e4e);
+        border-radius: 3px;
+        padding: 1px 4px;
+        margin-left: 8px;
+        flex: 0 0 auto;
         pointer-events: none;
     }
     .wfo-danger { color: #ff6b6b !important; }

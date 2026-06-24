@@ -87,10 +87,25 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 - [x] Folder-menu positioneert op de cursor i.p.v. een verouderd native menu van een vorige rechtsklik
 - [x] "New Folder" overal: lege-ruimte rechtsklik (root, werkt ook bij lege root), file-menu (root), folder-menu (root + "New Sub Folder")
 
+### v0.3.1 — Multi-user support ✅
+- [x] `_get_user_base(request)` resolvet de juiste gebruiker via ComfyUI's eigen `UserManager.get_request_user_id` (zelfde mechanisme als de native userdata-endpoints)
+- [x] Valt terug op `default` voor single-user — identiek gedrag, getest, geen verschil
+- [x] Alle endpoints (create/delete/rename/copy/ensure) geven `request` door; delete-handler vereenvoudigd (geen scan over alle users meer)
+
+### v0.4.0 — "Move to…" ✅
+- [x] Rechtsklik op workflow of map → "Move to…" → scrollbare maplijst (Root + alle mappen, ingesprongen) zonder slepen
+- [x] Maplijst komt van de server (ook ingeklapte mappen); huidige locatie uitgesloten; bij mappen ook self + submappen uitgesloten
+- [x] "Move to root" vervangen door "Move to…" (Root is de eerste keuze)
+
 ### Later / Ideeën
-- [ ] Multi-user: `_get_user_base` pakt nu de eerste user-map; voor multi-user setups consistenter maken
-- [ ] Werkt alleen met de default Workflows sidebar — third-party panel support onderzoeken
-- [ ] Sidebar DOM-stabiliteit: kan breken bij ComfyUI frontend-updates (PrimeVue class-namen)
+
+**Features**
+- [ ] **Multi-select + bulk move** — meerdere workflows selecteren (Ctrl/Shift-klik) en in één keer verplaatsen/slepen. Vergt eigen selectie-state
+- [ ] **Undo na move/delete** — toast met "Undo" als vangnet voor een verkeerde actie
+- [ ] **Map-kleuren of emoji** — visuele organisatie per map (vergt per-map metadata-opslag); puur cosmetisch
+
+**Robuustheid**
+- [ ] **Netjes falen bij ComfyUI frontend-updates** — defensieve selectors + fallbacks, niet crashen als een element ontbreekt, evt. een nette waarschuwing bij een onbekende frontend-versie (geen volledige oplossing mogelijk; hangt af van ComfyUI's interne PrimeVue DOM)
 
 ---
 
@@ -104,7 +119,7 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 
 ## Notities
 
-- Huidige versie: **v0.3.0**
+- Huidige versie: **v0.4.0**
 - Zero dependencies. JS-extensie + lichte Python-endpoints (geen zware nodes).
 - ComfyUI v0.3.0+ vereist (heeft `/userdata/{file}/move/{dest}` endpoint nodig).
 - **Python-wijzigingen vereisen een ComfyUI-herstart; JS-wijzigingen alleen een browser refresh.**
