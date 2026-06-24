@@ -168,27 +168,109 @@ let rootDropBar = null;
 // the right-click was on an item (not empty space) — reliable across DOM layouts.
 let itemContextActive = false;
 
+// ── Multi-select state (workflow files only) ────────────────────────────────
+let selectedPaths = new Set();   // relative paths (no .json) of selected workflows
+let selectionAnchor = null;      // path of the last clicked item, for shift-range
+
+// Ordered list of visible workflow-file paths in the tree (for shift-range).
+function getOrderedFilePaths(container) {
+  return [...container.querySelectorAll("[role='treeitem']")]
+    .filter((el) => el.classList.contains("p-tree-node-leaf") && el.style.display !== "none")
+    .map((el) => buildPath(el))
+    .filter(Boolean);
+}
+
+function clearSelection(container) {
+  if (!selectedPaths.size) return;
+  selectedPaths.clear();
+  selectionAnchor = null;
+  applySelectionStyles(container);
+  updateSelectionBar(container);
+}
+
+function applySelectionStyles(container) {
+  container.querySelectorAll("[role='treeitem']").forEach((el) => {
+    if (!el.classList.contains("p-tree-node-leaf")) return;
+    const content = el.querySelector(".p-tree-node-content");
+    if (!content) return;
+    content.classList.toggle("wfo-selected", selectedPaths.has(buildPath(el)));
+  });
+}
+
+function selectRange(container, fromPath, toPath) {
+  const order = getOrderedFilePaths(container);
+  const i = order.indexOf(fromPath);
+  const j = order.indexOf(toPath);
+  if (i === -1 || j === -1) { selectedPaths.add(toPath); return; }
+  const [lo, hi] = i <= j ? [i, j] : [j, i];
+  for (let k = lo; k <= hi; k++) selectedPaths.add(order[k]);
+}
+
+// Resolve a workflow-file tree item from an event target, if it's one of ours.
+function fileItemFromEvent(e) {
+  const t = e.target;
+  if (!t || !t.closest) return null;
+  const item = t.closest("[role='treeitem']");
+  if (!item || !item.classList.contains("p-tree-node-leaf")) return null;
+  const panel = findWorkflowsPanel();
+  if (!panel || !panel.contains(item)) return null;
+  if (getLabel(item) === "placeholder") return null;
+  return { item, panel };
+}
+
+// Document-level capture handlers run before ComfyUI's, so a modifier-click can
+// be claimed for selection while a plain click still loads the workflow.
+function installSelectionHandlers() {
+  const blockModifierDown = (e) => {
+    if (e.button !== 0 && e.button !== undefined) return;
+    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    if (!fileItemFromEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  document.addEventListener("pointerdown", blockModifierDown, true);
+  document.addEventListener("mousedown", blockModifierDown, true);
+
+  document.addEventListener("click", (e) => {
+    const found = fileItemFromEvent(e);
+    if (!found) return;
+    const { item, panel } = found;
+    const path = buildPath(item);
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault(); e.stopPropagation();
+      if (selectedPaths.has(path)) selectedPaths.delete(path);
+      else selectedPaths.add(path);
+      selectionAnchor = path;
+      applySelectionStyles(panel);
+      updateSelectionBar(panel);
+    } else if (e.shiftKey && selectionAnchor) {
+      e.preventDefault(); e.stopPropagation();
+      selectRange(panel, selectionAnchor, path);
+      applySelectionStyles(panel);
+      updateSelectionBar(panel);
+    } else {
+      // Plain click: clear the multi-selection (let ComfyUI load) but remember
+      // this row as the anchor for a later shift-click.
+      if (selectedPaths.size) {
+        selectedPaths.clear();
+        applySelectionStyles(panel);
+        updateSelectionBar(panel);
+      }
+      selectionAnchor = path;
+    }
+  }, true);
+}
+
 async function moveToRoot() {
   if (!dragData) return;
   if (dragData.isFolder) { await moveFolderTo(""); return; }
-  let fileName = dragData.name;
-  let sourcePath = dragData.path;
-  const movedElement = dragData.element;
+  const files = dragData.files || [dragData.path];
   dragData = null;
-  if (!fileName.endsWith(".json")) { fileName += ".json"; sourcePath += ".json"; }
-  const prefix = "workflows/";
-  const src = sourcePath.startsWith(prefix) ? sourcePath : prefix + sourcePath;
-  const dst = prefix + fileName;
-  if (src === dst) return;
   try {
-    await moveUserDataFile(src, dst);
-    try { app.extensionManager?.toast?.add({ severity: "success", summary: "Moved to root", detail: fileName, life: 3000 }); } catch (_) {}
-    await refreshWorkflowSidebar();
-    if (movedElement) movedElement.style.display = "none";
-    registerUndo(`Moved ${fileName.replace(/\.json$/, "")} to root`, async () => {
-      await moveUserDataFile(dst, src);
-      await refreshWorkflowSidebar();
-    });
+    const n = await performFileMoves(files, "");
+    const panel = findWorkflowsPanel();
+    if (panel) clearSelection(panel);
+    if (n > 0) { try { app.extensionManager?.toast?.add({ severity: "success", summary: n === 1 ? "Moved to root" : `Moved ${n} workflows to root`, life: 3000 }); } catch (_) {} }
   } catch (err) {
     try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
   }
@@ -611,6 +693,115 @@ async function apiRenameFolder(oldRel, newRel) {
   });
   if (!resp.ok) throw new Error(await resp.text());
 }
+
+// Move a file/folder to trash; returns its trash token.
+async function trashPath(rel) {
+  const resp = await api.fetchApi("/wfo/trash", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: `workflows/${rel}` }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  return (await resp.json()).trash;
+}
+
+// ── Bulk / multi-file move ──────────────────────────────────────────────────
+// Move a list of workflow paths (buildPath style, no .json) into destRel.
+// Registers a single undo for the whole batch. Returns how many actually moved.
+async function performFileMoves(filePaths, destRel) {
+  const undos = [];
+  for (const rel of filePaths) {
+    const fileName = rel.split("/").pop();
+    const src = `workflows/${rel}.json`;
+    const dst = `workflows/${destRel ? destRel + "/" : ""}${fileName}.json`;
+    if (src === dst) continue;
+    try { await moveUserDataFile(src, dst); undos.push([dst, src]); } catch (_) {}
+  }
+  if (destRel) { try { await deleteUserDataFile(`workflows/${destRel}/placeholder.json`); } catch (_) {} }
+  await refreshWorkflowSidebar();
+  if (undos.length) {
+    const label = undos.length === 1 ? "workflow" : "workflows";
+    registerUndo(`Moved ${undos.length} ${label}`, async () => {
+      for (const [from, to] of undos) { try { await moveUserDataFile(from, to); } catch (_) {} }
+      await refreshWorkflowSidebar();
+    });
+  }
+  return undos.length;
+}
+
+async function bulkMoveSelection(container, destRel) {
+  const paths = [...selectedPaths];
+  clearSelection(container);
+  const n = await performFileMoves(paths, destRel);
+  try { app.extensionManager?.toast?.add({ severity: "success", summary: `Moved ${n} workflows`, detail: destRel || "Root", life: 3000 }); } catch (_) {}
+}
+
+async function bulkDeleteSelection(container) {
+  const paths = [...selectedPaths];
+  const undos = []; // [token, destRel]
+  for (const rel of paths) {
+    try { const token = await trashPath(`${rel}.json`); undos.push([token, `${rel}.json`]); } catch (_) {}
+  }
+  clearSelection(container);
+  await refreshWorkflowSidebar();
+  try { app.extensionManager?.toast?.add({ severity: "success", summary: `Deleted ${undos.length} workflows`, life: 3000 }); } catch (_) {}
+  if (undos.length) {
+    registerUndo(`Deleted ${undos.length} workflows`, async () => {
+      for (const [token, destRel] of undos) { try { await restoreTrash(token, destRel); } catch (_) {} }
+      await refreshWorkflowSidebar();
+    });
+  }
+}
+
+function showBulkMovePicker(container) {
+  removeContextMenu();
+  const menu = document.createElement("div");
+  menu.className = "wfo-context-menu wfo-standalone";
+  document.body.appendChild(menu);
+  contextMenu = menu;
+  const bar = document.querySelector(".wfo-selection-bar");
+  const r = (bar || document.body).getBoundingClientRect();
+  menu.style.left = r.left + "px";
+  menu.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  transformMenuToFolderList(menu, {
+    currentRel: "__none__",
+    isExcluded: () => false,
+    onPick: (rel) => bulkMoveSelection(container, rel),
+  });
+  const closeHandler = (ev) => {
+    if (menu.contains(ev.target)) return;
+    removeContextMenu();
+    document.removeEventListener("mousedown", closeHandler);
+  };
+  setTimeout(() => document.addEventListener("mousedown", closeHandler), 50);
+}
+
+// ── Selection action bar ────────────────────────────────────────────────────
+let selectionBar = null;
+function updateSelectionBar(container) {
+  const n = selectedPaths.size;
+  if (n === 0) { if (selectionBar) { selectionBar.remove(); selectionBar = null; } return; }
+  if (!selectionBar) {
+    selectionBar = document.createElement("div");
+    selectionBar.className = "wfo-selection-bar";
+    selectionBar.innerHTML =
+      `<span class="wfo-sel-count"></span>` +
+      `<button class="wfo-sel-btn wfo-sel-move"><span class="pi pi-arrow-right"></span> Move to…</button>` +
+      `<button class="wfo-sel-btn wfo-sel-del"><span class="pi pi-trash"></span></button>` +
+      `<button class="wfo-sel-btn wfo-sel-clear"><span class="pi pi-times"></span></button>`;
+    document.body.appendChild(selectionBar);
+    selectionBar.querySelector(".wfo-sel-move").addEventListener("click", () => showBulkMovePicker(container));
+    selectionBar.querySelector(".wfo-sel-del").addEventListener("click", () => bulkDeleteSelection(container));
+    selectionBar.querySelector(".wfo-sel-clear").addEventListener("click", () => clearSelection(container));
+  }
+  selectionBar.querySelector(".wfo-sel-count").textContent = `${n} selected`;
+  const panel = findWorkflowsPanel();
+  if (panel) {
+    const pr = panel.getBoundingClientRect();
+    selectionBar.style.left = (pr.left + pr.width / 2) + "px";
+    selectionBar.style.maxWidth = Math.max(180, pr.width - 24) + "px";
+  }
+}
 // ──────────────────────────────────────────────────────────────────────────
 
 // Move a workflow file into destRel ("" = root).
@@ -671,7 +862,20 @@ function makeMoveToItem(menu, item, isFolderItem) {
         if (isFolderItem) return rel === srcRel || rel.startsWith(srcRel + "/");
         return false;
       },
-      onPick: (rel) => isFolderItem ? moveFolderToFolder(item, rel) : moveFileToFolder(item, rel),
+      onPick: (rel) => {
+        if (isFolderItem) return moveFolderToFolder(item, rel);
+        // If the right-clicked workflow is part of a multi-selection, move all
+        const p = buildPath(item);
+        if (selectedPaths.size > 1 && selectedPaths.has(p)) {
+          const paths = [...selectedPaths];
+          const panel = findWorkflowsPanel();
+          if (panel) clearSelection(panel);
+          return performFileMoves(paths, rel).then((n) => {
+            try { app.extensionManager?.toast?.add({ severity: "success", summary: `Moved ${n} workflows`, detail: rel || "Root", life: 3000 }); } catch (_) {}
+          });
+        }
+        return moveFileToFolder(item, rel);
+      },
     });
   });
   return moveTo;
@@ -879,7 +1083,9 @@ function attachDragHandlers(container) {
         const path = buildPath(item);
         const name = getLabel(item);
         if (!path || !name) { e.preventDefault(); return; }
-        dragData = { path, name, element: item, isFolder: false };
+        // If dragging part of a multi-selection, carry the whole selection
+        const files = (selectedPaths.size > 1 && selectedPaths.has(path)) ? [...selectedPaths] : [path];
+        dragData = { path, name, element: item, isFolder: false, files };
         e.dataTransfer.effectAllowed = "move";
         contentEl.style.opacity = "0.4";
         setTimeout(() => showRootDropBar(container), 0);
@@ -958,30 +1164,13 @@ function attachDragHandlers(container) {
         // Folder dropped onto another folder → move folder + contents
         if (dragData.isFolder) { await moveFolderTo(folderPath); return; }
 
-        // File dropped onto a folder → move workflow
-        let sourcePath = dragData.path;
-        let fileName = dragData.name;
-        if (!fileName.endsWith(".json")) { fileName += ".json"; sourcePath += ".json"; }
-        const destPath = folderPath + "/" + fileName;
-
-        const movedElement = dragData.element;
+        // File(s) dropped onto a folder → move workflow(s)
+        const files = dragData.files || [dragData.path];
         dragData = null;
-
-        const prefix = "workflows/";
-        const src = sourcePath.startsWith(prefix) ? sourcePath : prefix + sourcePath;
-        const dst = destPath.startsWith(prefix) ? destPath : prefix + destPath;
-        if (src === dst) return;  // dropped onto its own folder — no-op
-
         try {
-          await moveUserDataFile(src, dst);
-          await deleteUserDataFile(`workflows/${folderPath}/placeholder.json`);
-          try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow moved", detail: fileName, life: 3000 }); } catch (_) {}
-          await refreshWorkflowSidebar();
-          if (movedElement) movedElement.style.display = "none";
-          registerUndo(`Moved ${fileName.replace(/\.json$/, "")}`, async () => {
-            await moveUserDataFile(dst, src);
-            await refreshWorkflowSidebar();
-          });
+          const n = await performFileMoves(files, folderPath);
+          clearSelection(container);
+          if (n > 0) { try { app.extensionManager?.toast?.add({ severity: "success", summary: n === 1 ? "Workflow moved" : `Moved ${n} workflows`, detail: folderPath, life: 3000 }); } catch (_) {} }
         } catch (err) {
           try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
         }
@@ -1113,6 +1302,47 @@ function injectStyles() {
         transition: background 0.12s, color 0.12s;
     }
     .wfo-undo-btn:hover { background: var(--p-primary-color, #4a9eff); color: #fff; }
+    .wfo-selected {
+        background: color-mix(in srgb, var(--p-primary-color, #4a9eff) 22%, transparent) !important;
+        box-shadow: inset 2px 0 0 var(--p-primary-color, #4a9eff);
+        border-radius: 4px;
+    }
+    .wfo-selection-bar {
+        position: fixed;
+        bottom: 24px;
+        transform: translateX(-50%);
+        z-index: 1000000;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: var(--comfy-menu-bg, #1e1e1e);
+        border: 1px solid var(--border-color, #4e4e4e);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+        color: var(--input-text, #fff);
+        font-family: var(--comfy-font-family, Inter, Arial, sans-serif);
+        font-size: 13px;
+        animation: wfo-undo-in 0.15s ease-out;
+    }
+    .wfo-sel-count { white-space: nowrap; margin-right: 4px; font-weight: 500; }
+    .wfo-sel-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        background: transparent;
+        border: 1px solid var(--border-color, #4e4e4e);
+        color: var(--input-text, #fff);
+        font-size: 12px;
+        padding: 5px 10px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .wfo-sel-btn:hover { background: var(--content-hover-bg, #333); }
+    .wfo-sel-move:hover { border-color: var(--p-primary-color, #4a9eff); color: var(--p-primary-color, #4a9eff); }
+    .wfo-sel-del:hover { border-color: #ff6b6b; color: #ff6b6b; }
     .wfo-current-tag {
         font-size: 9px;
         text-transform: uppercase;
@@ -1226,6 +1456,7 @@ app.registerExtension({
   name: EXTENSION_NAME,
   async setup() {
     injectStyles();
+    installSelectionHandlers();
     const bodyObserver = new MutationObserver(() => {
       const panel = findWorkflowsPanel();
       if (panel && !panel.dataset.wfoInit) {
@@ -1255,10 +1486,21 @@ app.registerExtension({
           attachDragHandlers(panel);
           applyPlaceholderBadges(panel);
           ensurePlaceholders();
+          // Keep the highlight on re-render. Don't prune by visibility — a
+          // selected file in a collapsed folder is simply not shown, not gone.
+          if (selectedPaths.size) applySelectionStyles(panel);
         });
         treeObserver.observe(panel, { childList: true, subtree: true });
       }
     });
     bodyObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Escape clears the current selection
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && selectedPaths.size) {
+        const panel = findWorkflowsPanel();
+        if (panel) clearSelection(panel);
+      }
+    });
   },
 });

@@ -148,9 +148,37 @@ async def delete_wfo_folder(request):
         return web.Response(status=500, text=str(e))
 
 
+@PromptServer.instance.routes.post("/wfo/trash")
+async def trash_path(request):
+    """Move a file or folder to the hidden trash; return its trash token.
+    Works for single workflows (used by bulk delete) and folders alike."""
+    try:
+        data = await request.json()
+        rel = data.get("path", "").replace("\\", "/").strip("/")
+        if not rel or ".." in rel.split("/"):
+            return web.Response(status=400, text="Invalid path")
+
+        base = _get_user_base(request)
+        if not base:
+            return web.Response(status=404, text="Workflows directory not found")
+
+        target = _resolve_safe(base, rel)
+        if not target or not os.path.exists(target):
+            return web.Response(status=404, text="Not found")
+
+        trash = _trash_dir(base)
+        os.makedirs(trash, exist_ok=True)
+        _prune_trash(trash)
+        token = "%d_%s" % (int(time.time() * 1000), os.path.basename(target))
+        shutil.move(target, os.path.join(trash, token))
+        return web.json_response({"trash": token})
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+
 @PromptServer.instance.routes.post("/wfo/trash/restore")
 async def restore_trash(request):
-    """Move a trashed folder back to its original location (undo a delete)."""
+    """Move a trashed file or folder back to its original location (undo delete)."""
     try:
         data = await request.json()
         token = data.get("trash", "")
@@ -166,7 +194,7 @@ async def restore_trash(request):
             return web.Response(status=404, text="Workflows directory not found")
 
         src = os.path.join(_trash_dir(base), token)
-        if not os.path.isdir(src):
+        if not os.path.exists(src):
             return web.Response(status=404, text="Trash entry not found")
 
         target = _resolve_safe(base, dest_rel)

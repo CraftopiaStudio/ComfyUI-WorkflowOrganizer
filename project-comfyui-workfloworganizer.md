@@ -107,10 +107,16 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 - [x] Prullenbak ruimt items ouder dan 7 dagen automatisch op (geen disk-bloat)
 - [x] Workflow-delete bewust aan ComfyUI's native delete gelaten (schoner, geen dubbele "Delete", geen risicovolle interceptie)
 
+### v0.7.0 — Multi-select + bulk acties ✅
+- [x] Ctrl/Cmd+klik (toggle) en Shift+klik (bereik) selecteren workflows; gewone klik laadt nog gewoon (selectie afgevangen op document-niveau in capture, vóór ComfyUI)
+- [x] Geselecteerde rijen krijgen highlight; selectie-balkje `N selected · Move to… · 🗑 · ✕`; Escape wist
+- [x] Bulk move via slepen, rechtsklik "Move to…" (selectie-bewust) én het balkje — alles met één undo
+- [x] Bulk delete naar prullenbak (generiek `/wfo/trash` endpoint, ook voor losse bestanden) met undo
+- [x] Selectie blijft intact bij re-render (geen pruning op zichtbaarheid; ingeklapte map = niet getoond, niet weg)
+
 ### Later / Ideeën
 
 **Features**
-- [ ] **Multi-select + bulk move** — meerdere workflows selecteren (Ctrl/Shift-klik) en in één keer verplaatsen/slepen. Vergt eigen selectie-state
 - [ ] **Map-kleuren of emoji** — visuele organisatie per map (vergt per-map metadata-opslag); puur cosmetisch
 
 **Robuustheid**
@@ -128,7 +134,7 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 
 ## Notities
 
-- Huidige versie: **v0.6.0**
+- Huidige versie: **v0.7.0**
 - Zero dependencies. JS-extensie + lichte Python-endpoints (geen zware nodes).
 - ComfyUI v0.3.0+ vereist (heeft `/userdata/{file}/move/{dest}` endpoint nodig).
 - **Python-wijzigingen vereisen een ComfyUI-herstart; JS-wijzigingen alleen een browser refresh.**
