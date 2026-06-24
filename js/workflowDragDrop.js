@@ -174,6 +174,10 @@ async function moveToRoot() {
     try { app.extensionManager?.toast?.add({ severity: "success", summary: "Moved to root", detail: fileName, life: 3000 }); } catch (_) {}
     await refreshWorkflowSidebar();
     if (movedElement) movedElement.style.display = "none";
+    registerUndo(`Moved ${fileName.replace(/\.json$/, "")} to root`, async () => {
+      await moveUserDataFile(dst, src);
+      await refreshWorkflowSidebar();
+    });
   } catch (err) {
     try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
   }
@@ -197,15 +201,14 @@ async function moveFolderTo(destParentRel) {
 
   const dstRel = destParentRel ? `${destParentRel}/${name}` : name;
   try {
-    const resp = await api.fetchApi("/wfo/folder/rename", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ old: `workflows/${srcRel}`, new: `workflows/${dstRel}` }),
-    });
-    if (!resp.ok) throw new Error(await resp.text());
+    await apiRenameFolder(srcRel, dstRel);
     try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder moved", detail: name, life: 3000 }); } catch (_) {}
     await refreshWorkflowSidebar();
     if (movedElement) movedElement.style.display = "none";
+    registerUndo(`Moved ${name}`, async () => {
+      await apiRenameFolder(dstRel, srcRel);
+      await refreshWorkflowSidebar();
+    });
   } catch (err) {
     try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
   }
@@ -544,6 +547,61 @@ async function transformMenuToFolderList(menu, { isExcluded, currentRel, onPick 
   applyMenuMetrics(menu, nativeMenuMetrics);
 }
 
+// ── Undo support ──────────────────────────────────────────────────────────
+let undoBar = null;
+let undoTimer = null;
+
+function hideUndoSnackbar() {
+  if (undoTimer) { clearTimeout(undoTimer); undoTimer = null; }
+  if (undoBar) { undoBar.remove(); undoBar = null; }
+}
+
+// Show a "… — Undo" snackbar; clicking Undo runs undoFn.
+function registerUndo(message, undoFn) {
+  hideUndoSnackbar();
+  const bar = document.createElement("div");
+  bar.className = "wfo-undo-bar";
+  const msg = document.createElement("span");
+  msg.className = "wfo-undo-msg";
+  msg.textContent = message;
+  const btn = document.createElement("button");
+  btn.className = "wfo-undo-btn";
+  btn.textContent = "Undo";
+  btn.addEventListener("click", async () => {
+    hideUndoSnackbar();
+    try {
+      await undoFn();
+      try { app.extensionManager?.toast?.add({ severity: "success", summary: "Undone", life: 2500 }); } catch (_) {}
+    } catch (err) {
+      try { app.extensionManager?.toast?.add({ severity: "error", summary: "Undo failed", detail: err.message, life: 5000 }); } catch (_) {}
+    }
+  });
+  bar.appendChild(msg);
+  bar.appendChild(btn);
+  document.body.appendChild(bar);
+
+  // Anchor over the Workflows sidebar (not the whole screen) when we can find it
+  const panel = findWorkflowsPanel();
+  if (panel) {
+    const r = panel.getBoundingClientRect();
+    bar.style.left = (r.left + r.width / 2) + "px";
+    bar.style.maxWidth = Math.max(180, r.width - 24) + "px";
+  }
+
+  undoBar = bar;
+  undoTimer = setTimeout(hideUndoSnackbar, 6000);
+}
+
+async function apiRenameFolder(oldRel, newRel) {
+  const resp = await api.fetchApi("/wfo/folder/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old: `workflows/${oldRel}`, new: `workflows/${newRel}` }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+}
+// ──────────────────────────────────────────────────────────────────────────
+
 // Move a workflow file into destRel ("" = root).
 async function moveFileToFolder(item, destRel) {
   let fileName = getLabel(item);
@@ -558,6 +616,10 @@ async function moveFileToFolder(item, destRel) {
     if (destRel) await deleteUserDataFile(`workflows/${destRel}/placeholder.json`);
     try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow moved", detail: destRel || "Root", life: 3000 }); } catch (_) {}
     await refreshWorkflowSidebar();
+    registerUndo(`Moved ${fileName.replace(/\.json$/, "")}`, async () => {
+      await moveUserDataFile(dst, src);
+      await refreshWorkflowSidebar();
+    });
   } catch (err) {
     try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
   }
@@ -569,14 +631,13 @@ async function moveFolderToFolder(item, destRel) {
   const name = getLabel(item);
   const dstRel = destRel ? `${destRel}/${name}` : name;
   try {
-    const resp = await api.fetchApi("/wfo/folder/rename", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ old: `workflows/${srcRel}`, new: `workflows/${dstRel}` }),
-    });
-    if (!resp.ok) throw new Error(await resp.text());
+    await apiRenameFolder(srcRel, dstRel);
     try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder moved", detail: destRel || "Root", life: 3000 }); } catch (_) {}
     await refreshWorkflowSidebar();
+    registerUndo(`Moved ${name}`, async () => {
+      await apiRenameFolder(dstRel, srcRel);
+      await refreshWorkflowSidebar();
+    });
   } catch (err) {
     try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
   }
@@ -900,6 +961,10 @@ function attachDragHandlers(container) {
           try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow moved", detail: fileName, life: 3000 }); } catch (_) {}
           await refreshWorkflowSidebar();
           if (movedElement) movedElement.style.display = "none";
+          registerUndo(`Moved ${fileName.replace(/\.json$/, "")}`, async () => {
+            await moveUserDataFile(dst, src);
+            await refreshWorkflowSidebar();
+          });
         } catch (err) {
           try { app.extensionManager?.toast?.add({ severity: "error", summary: "Move failed", detail: err.message, life: 5000 }); } catch (_) {}
         }
@@ -996,6 +1061,41 @@ function injectStyles() {
         overflow: hidden;
         text-overflow: ellipsis;
     }
+    .wfo-undo-bar {
+        position: fixed;
+        left: 50%;
+        bottom: 24px;
+        transform: translateX(-50%);
+        z-index: 1000000;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 12px 10px 16px;
+        border-radius: 8px;
+        background: var(--comfy-menu-bg, #1e1e1e);
+        border: 1px solid var(--border-color, #4e4e4e);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+        color: var(--input-text, #fff);
+        font-family: var(--comfy-font-family, Inter, Arial, sans-serif);
+        font-size: 13px;
+        animation: wfo-undo-in 0.15s ease-out;
+    }
+    @keyframes wfo-undo-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    .wfo-undo-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .wfo-undo-btn { flex: 0 0 auto; }
+    .wfo-undo-btn {
+        background: transparent;
+        border: 1px solid var(--p-primary-color, #4a9eff);
+        color: var(--p-primary-color, #4a9eff);
+        font-weight: 600;
+        font-size: 12px;
+        padding: 4px 12px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.12s, color 0.12s;
+    }
+    .wfo-undo-btn:hover { background: var(--p-primary-color, #4a9eff); color: #fff; }
     .wfo-current-tag {
         font-size: 9px;
         text-transform: uppercase;
