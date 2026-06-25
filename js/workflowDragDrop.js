@@ -180,8 +180,6 @@ let rootDropBar = null;
 // Set true by a tree item's contextmenu handler so the panel-level handler knows
 // the right-click was on an item (not empty space) — reliable across DOM layouts.
 let itemContextActive = false;
-let _lastContextMenuAt = 0;
-let _contextMenuForItem = null;
 
 // ── Multi-select state (workflow files only) ────────────────────────────────
 let selectedPaths = new Set();   // relative paths (no .json) of selected workflows
@@ -488,8 +486,6 @@ function inlineRenameInTree(folderItem, onConfirm) {
   labelEl.innerHTML = "";
   labelEl.appendChild(input);
 
-  setTimeout(() => { input.focus(); input.select(); }, 0);
-
   const restore = () => { labelEl.innerHTML = originalHTML; };
 
   const commit = async () => {
@@ -512,7 +508,24 @@ function inlineRenameInTree(folderItem, onConfirm) {
     if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); await commit(); }
     else if (e.key === "Escape") { e.stopPropagation(); cancel(); }
   });
-  input.addEventListener("blur", cancel);
+
+  // Focus on the next frame, and only arm the blur-to-cancel handler once focus
+  // has actually landed. Otherwise a spurious blur during menu teardown can
+  // cancel the rename before the user types anything (intermittent failure).
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+    if (document.activeElement === input) {
+      input.addEventListener("blur", cancel);
+    } else {
+      // Focus didn't land (rare) — retry once next frame, then arm blur.
+      requestAnimationFrame(() => {
+        input.focus();
+        input.select();
+        input.addEventListener("blur", cancel);
+      });
+    }
+  });
 }
 
 function transformMenuToInput(menu, defaultValue, onConfirm, label = "Name:") {
@@ -1242,132 +1255,179 @@ function showEmptyAreaMenu(e) {
   setTimeout(() => document.addEventListener("mousedown", closeHandler), 100);
 }
 
-function removeContextMenu() {
-  if (contextMenu) { contextMenu.remove(); contextMenu = null; }
-  _contextMenuForItem = null;
+// One global observer: while our menu is open, remove any native ComfyUI
+// context menu the moment it is inserted. MutationObserver callbacks run before
+// paint, so the native menu never becomes visible. Removing the node (not just
+// hiding it) also prevents PrimeVue from resurrecting it when we close.
+let _nativeMenuSuppressor = null;
+function installNativeMenuSuppressor() {
+  if (_nativeMenuSuppressor) return;
+  _nativeMenuSuppressor = new MutationObserver(() => {
+    if (!document.body.classList.contains("wfo-menu-open")) return;
+    document.querySelectorAll(".p-contextmenu, .p-tieredmenu").forEach((el) => {
+      // Steal the native menu's font/size metrics for our own menu, then remove
+      // it — all within this pre-paint callback, so nothing ever flashes.
+      try { if (contextMenu) applyNativeMenuFont(contextMenu, el); } catch (_) {}
+      try { el.remove(); } catch (_) {}
+    });
+  });
+  _nativeMenuSuppressor.observe(document.body, { childList: true, subtree: true });
 }
 
-function showContextMenu(e, item) {
-  const now = Date.now();
-  if (now - _lastContextMenuAt < 400) return;
-  _lastContextMenuAt = now;
-  removeContextMenu();
-  const menu = document.createElement("div");
-  menu.className = "wfo-context-menu";
-  menu.style.visibility = "hidden";
+function removeContextMenu() {
+  if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+  document.body.classList.remove("wfo-menu-open");
+}
 
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const realMenu = document.querySelector(".p-contextmenu, .p-tieredmenu");
-    if (realMenu) {
-      const rect = realMenu.getBoundingClientRect();
-      menu.style.left = rect.left + "px";
-      menu.style.top = (rect.bottom - 4) + "px";
-      menu.style.width = rect.width + "px";
-      // Patch native Duplicate → file copy on disk
-      try {
-        for (const el of realMenu.querySelectorAll("a, [class*='item-link'], [class*='item-content']")) {
-          if (el.textContent.trim() === "Duplicate") {
-            const clone = el.cloneNode(true);
-            clone.addEventListener("click", async () => {
-              try {
-                const newName = await duplicateFile(buildPath(item));
-                try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow duplicated", detail: newName.replace(/\.json$/, ""), life: 3000 }); } catch (_) {}
-                await refreshWorkflowSidebar();
-              } catch (err) {
-                try { app.extensionManager?.toast?.add({ severity: "error", summary: "Duplicate failed", detail: err.message, life: 5000 }); } catch (_) {}
-              }
-            });
-            el.parentNode.replaceChild(clone, el);
-            break;
-          }
-        }
-      } catch (_) {}
-      // Patch native Delete → bulk delete when multiple items selected
-      if (selectedPaths.size > 1 && selectedPaths.has(buildPath(item))) {
-        try {
-          for (const el of realMenu.querySelectorAll("a, [class*='item-link'], [class*='item-content']")) {
-            if (el.textContent.trim() === "Delete") {
-              const n = selectedPaths.size;
-              const paths = [...selectedPaths];
-              const clone = el.cloneNode(true);
-              clone.addEventListener("click", () => {
-                const list = paths.map(p => `<li>${p.split("/").pop()}</li>`).join("");
-                showWfoConfirm({
-                  title: `Delete ${n} workflow${n === 1 ? "" : "s"}?`,
-                  body: `Are you sure you want to delete these workflows?<ul>${list}</ul>`,
-                  confirmLabel: "Delete",
-                  danger: true,
-                  onConfirm: () => { const panel = findWorkflowsPanel(); if (panel) bulkDeleteSelection(panel); },
-                });
-              });
-              el.parentNode.replaceChild(clone, el);
-              break;
-            }
-          }
-        } catch (_) {}
-      }
-    } else {
-      menu.style.left = e.clientX + "px";
-      menu.style.top = e.clientY + "px";
+// Rename a single workflow file on disk via the rename endpoint.
+async function renameWorkflowFile(item) {
+  const oldLabel = getLabel(item);
+  inlineRenameInTree(item, async (newName) => {
+    const cleanName = newName.replace(/[/\\]/g, "");
+    if (!cleanName || cleanName === oldLabel) return;
+    const oldRel = buildPath(item);
+    const parts = oldRel.split("/");
+    parts[parts.length - 1] = cleanName;
+    const newRel = parts.join("/");
+    try {
+      const resp = await api.fetchApi("/wfo/folder/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old: `workflows/${oldRel}.json`, new: `workflows/${newRel}.json` }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow renamed", detail: `${oldLabel} → ${cleanName}`, life: 3000 }); } catch (_) {}
+      await refreshWorkflowSidebar();
+    } catch (err) {
+      try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
     }
-    applyNativeMenuFont(menu, realMenu);
-    menu.style.visibility = "visible";
-  }));
+  });
+}
 
-  const moveTo = makeMoveToItem(menu, item, false);
-  const newFolder = makeNewFolderItem(menu, "");
+// Move a single workflow file to trash, with undo.
+async function deleteWorkflowFile(item) {
+  const name = getLabel(item);
+  const rel = buildPath(item);
+  try {
+    const token = await trashPath(`${rel}.json`);
+    try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow deleted", detail: name, life: 3000 }); } catch (_) {}
+    await refreshWorkflowSidebar();
+    registerUndo(`Deleted ${name}`, async () => {
+      await restoreTrash(token, `${rel}.json`);
+      await refreshWorkflowSidebar();
+    });
+  } catch (err) {
+    try { app.extensionManager?.toast?.add({ severity: "error", summary: "Delete failed", detail: err.message, life: 5000 }); } catch (_) {}
+  }
+}
 
-  const wfoDivider = document.createElement("div");
-  wfoDivider.className = "wfo-context-divider";
-
-  const setColorItem = document.createElement("div");
-  setColorItem.className = "wfo-context-item";
-  setColorItem.innerHTML = `<span class="pi pi-palette wfo-icon"></span><span class="wfo-label">Set Color</span>`;
-  setColorItem.addEventListener("mousedown", (ev) => {
+// Build a "Rename" / "Duplicate" / "Delete" menu item with a consistent shape.
+function makeContextItem(icon, label, onPick, danger = false) {
+  const el = document.createElement("div");
+  el.className = "wfo-context-item" + (danger ? " wfo-danger" : "");
+  el.innerHTML = `<span class="pi ${icon} wfo-icon"></span><span class="wfo-label">${label}</span>`;
+  el.addEventListener("mousedown", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    const fileRel = buildPath(item);
-    transformMenuToColorPicker(menu, fileColors[fileRel] || "", async (color) => {
+    onPick(el);
+  });
+  return el;
+}
+
+// Full standalone file menu — we suppress ComfyUI's native menu (see the
+// body.wfo-menu-open CSS rule) so there is no positioning race or flicker.
+function showContextMenu(e, item) {
+  removeContextMenu();
+  installNativeMenuSuppressor();
+  document.body.classList.add("wfo-menu-open");
+  const menu = document.createElement("div");
+  menu.className = "wfo-context-menu wfo-standalone";
+
+  // Multi-select: a delete from here trashes the whole selection.
+  const rel = buildPath(item);
+  const multi = selectedPaths.size > 1 && selectedPaths.has(rel);
+
+  const rename = makeContextItem("pi-pencil", "Rename", () => { removeContextMenu(); renameWorkflowFile(item); });
+
+  const duplicate = makeContextItem("pi-copy", "Duplicate", async () => {
+    removeContextMenu();
+    try {
+      const newName = await duplicateFile(rel);
+      try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow duplicated", detail: newName.replace(/\.json$/, ""), life: 3000 }); } catch (_) {}
+      await refreshWorkflowSidebar();
+    } catch (err) {
+      try { app.extensionManager?.toast?.add({ severity: "error", summary: "Duplicate failed", detail: err.message, life: 5000 }); } catch (_) {}
+    }
+  });
+
+  const moveTo = makeMoveToItem(menu, item, false);
+
+  const setColorItem = makeContextItem("pi-palette", "Set Color", () => {
+    transformMenuToColorPicker(menu, fileColors[rel] || "", async (color) => {
       try {
-        await setFileColor(fileRel, color);
+        await setFileColor(rel, color);
       } catch (err) {
         try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
       }
     }, { showFolderOptions: false });
   });
 
+  const newFolder = makeNewFolderItem(menu, "");
+
+  const divider = document.createElement("div");
+  divider.className = "wfo-context-divider";
+
+  const del = makeContextItem("pi-trash", multi ? `Delete ${selectedPaths.size}` : "Delete", () => {
+    removeContextMenu();
+    if (multi) {
+      const n = selectedPaths.size;
+      const list = [...selectedPaths].map(p => `<li>${p.split("/").pop()}</li>`).join("");
+      showWfoConfirm({
+        title: `Delete ${n} workflows?`,
+        body: `Are you sure you want to delete these workflows?<ul>${list}</ul>`,
+        confirmLabel: "Delete",
+        danger: true,
+        onConfirm: () => { const panel = findWorkflowsPanel(); if (panel) bulkDeleteSelection(panel); },
+      });
+    } else {
+      showWfoConfirm({
+        title: "Delete workflow?",
+        body: `Delete "<b>${getLabel(item)}</b>"? This can be undone.`,
+        confirmLabel: "Delete",
+        danger: true,
+        onConfirm: () => deleteWorkflowFile(item),
+      });
+    }
+  }, true);
+
   document.body.appendChild(menu);
-  menu.appendChild(wfoDivider);
+  menu.appendChild(rename);
+  menu.appendChild(duplicate);
   menu.appendChild(moveTo);
   menu.appendChild(setColorItem);
   menu.appendChild(newFolder);
+  menu.appendChild(divider);
+  menu.appendChild(del);
+
+  menu.style.left = e.clientX + "px";
+  menu.style.top = e.clientY + "px";
+  applyNativeMenuFont(menu, document.querySelector(".p-contextmenu, .p-tieredmenu"));
   contextMenu = menu;
 
   const closeHandler = (ev) => {
-    if (ev.button === 2 || menu.contains(ev.target)) return;
+    if (menu.contains(ev.target)) return;
     removeContextMenu();
     document.removeEventListener("mousedown", closeHandler);
   };
-  setTimeout(() => document.addEventListener("mousedown", closeHandler), 100);
+  setTimeout(() => document.addEventListener("mousedown", closeHandler), 0);
 }
 
 function showFolderContextMenu(e, item) {
-  const now = Date.now();
-  if (now - _lastContextMenuAt < 400) return;
-  _lastContextMenuAt = now;
   removeContextMenu();
+  installNativeMenuSuppressor();
+  document.body.classList.add("wfo-menu-open");
   const menu = document.createElement("div");
   menu.className = "wfo-context-menu wfo-standalone";
-  menu.style.visibility = "hidden";
-
-  const cursorX = e.clientX;
-  const cursorY = e.clientY;
-  setTimeout(() => {
-    menu.style.left = cursorX + "px";
-    menu.style.top = cursorY + "px";
-    menu.style.visibility = "visible";
-    applyNativeMenuFont(menu, document.querySelector(".p-contextmenu, .p-tieredmenu"));
-  }, 10);
 
   const renameFolder = document.createElement("div");
   renameFolder.className = "wfo-context-item";
@@ -1467,6 +1527,9 @@ function showFolderContextMenu(e, item) {
   const newFolderRoot = makeNewFolderItem(menu, "", "New Folder");
   const newSubFolder = makeNewFolderItem(menu, buildPath(item), "New Sub Folder", "pi-folder-plus", "New subfolder name:");
 
+  const divider = document.createElement("div");
+  divider.className = "wfo-context-divider";
+
   document.body.appendChild(menu);
   menu.appendChild(renameFolder);
   menu.appendChild(duplicateFolder_);
@@ -1474,15 +1537,20 @@ function showFolderContextMenu(e, item) {
   menu.appendChild(setColor);
   menu.appendChild(newFolderRoot);
   menu.appendChild(newSubFolder);
+  menu.appendChild(divider);
   menu.appendChild(deleteFolder_);
+
+  menu.style.left = e.clientX + "px";
+  menu.style.top = e.clientY + "px";
+  applyNativeMenuFont(menu, document.querySelector(".p-contextmenu, .p-tieredmenu"));
   contextMenu = menu;
 
   const closeHandler = (ev) => {
-    if (ev.button === 2 || menu.contains(ev.target)) return;
+    if (menu.contains(ev.target)) return;
     removeContextMenu();
     document.removeEventListener("mousedown", closeHandler);
   };
-  setTimeout(() => document.addEventListener("mousedown", closeHandler), 100);
+  setTimeout(() => document.addEventListener("mousedown", closeHandler), 0);
 }
 
 function findWorkflowsPanel() {
@@ -1674,6 +1742,12 @@ function injectStyles() {
         border-top: 1px solid var(--border-color, #4e4e4e);
         border-radius: 4px;
         min-width: 180px;
+    }
+    /* While our own context menu is open, suppress ComfyUI's native menu so we
+       can render a single, consistent menu with no positioning race. */
+    body.wfo-menu-open .p-contextmenu,
+    body.wfo-menu-open .p-tieredmenu {
+        display: none !important;
     }
     .wfo-context-item {
         padding: 8px 12px;

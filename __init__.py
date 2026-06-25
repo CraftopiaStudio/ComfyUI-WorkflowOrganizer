@@ -130,6 +130,26 @@ def _remap_color_keys(base, old_rel, new_rel):
         _save_meta(base, meta)
 
 
+def _remap_file_color_key(base, old_rel, new_rel):
+    """When a workflow file is renamed, move its color to the new key."""
+    prefix = "workflows/"
+    def norm(r):
+        r = r.replace("\\", "/").strip("/")
+        if r.startswith(prefix):
+            r = r[len(prefix):]
+        if r.endswith(".json"):
+            r = r[:-len(".json")]
+        return r
+    old_key = norm(old_rel)
+    new_key = norm(new_rel)
+    meta = _load_meta(base)
+    file_colors = meta.get("file_colors", {})
+    if old_key in file_colors:
+        file_colors[new_key] = file_colors.pop(old_key)
+        meta["file_colors"] = file_colors
+        _save_meta(base, meta)
+
+
 @PromptServer.instance.routes.post("/wfo/folder")
 async def create_wfo_folder(request):
     try:
@@ -380,13 +400,17 @@ async def rename_wfo_folder(request):
         dst = _resolve_safe(base, new_rel)
         if not src or not dst:
             return web.Response(status=403, text="Forbidden")
-        if not os.path.isdir(src):
-            return web.Response(status=404, text="Folder not found")
+        if not os.path.exists(src):
+            return web.Response(status=404, text="Not found")
         if os.path.exists(dst):
             return web.Response(status=409, text="Destination already exists")
 
+        was_dir = os.path.isdir(src)
         os.rename(src, dst)
-        _remap_color_keys(base, old_rel, new_rel)
+        if was_dir:
+            _remap_color_keys(base, old_rel, new_rel)
+        else:
+            _remap_file_color_key(base, old_rel, new_rel)
         return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))
