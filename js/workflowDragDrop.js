@@ -640,6 +640,279 @@ async function transformMenuToFolderList(menu, { isExcluded, currentRel, onPick 
   applyMenuMetrics(menu, nativeMenuMetrics);
 }
 
+// Preset folder colors for the picker
+const WFO_COLOR_PRESETS = [
+  "#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16",
+  "#22c55e", "#14b8a6", "#3b82f6", "#6366f1", "#a855f7",
+  "#ec4899", "#94a3b8",
+];
+
+// ── Colour conversion ───────────────────────────────────────────────────────
+function hsvToRgb(h, s, v) {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r, g, b;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+function rgbToHex(r, g, b) {
+  return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+function hexToHsv(hex) {
+  let h6 = (hex || "").replace("#", "");
+  if (h6.length === 3) h6 = h6.split("").map((c) => c + c).join("");
+  if (!/^[0-9a-f]{6}$/i.test(h6)) return null;
+  const r = parseInt(h6.slice(0, 2), 16) / 255;
+  const g = parseInt(h6.slice(2, 4), 16) / 255;
+  const b = parseInt(h6.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) {
+    if (max === r) h = (((g - b) / d) % 6 + 6) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+  return { h, s: max === 0 ? 0 : d / max, v: max };
+}
+
+// Drag helper: calls onMove(x, y) with 0–1 coords for pointerdown + drag.
+function bindDragArea(el, onMove) {
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const apply = (ev) => {
+      const r = el.getBoundingClientRect();
+      const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+      const y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+      onMove(x, y);
+    };
+    apply(e);
+    const move = (ev) => apply(ev);
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+}
+
+// Transform a context menu into a folder-color picker: inline gradient picker
+// (SV area + hue slider) + vivid preset swatches + hex input + reset.
+function transformMenuToColorPicker(menu, currentColor, onPick) {
+  menu.innerHTML = "";
+  menu.classList.add("wfo-standalone");
+  menu.style.width = "220px";
+  menu.style.padding = "10px";
+
+  const heading = document.createElement("div");
+  heading.className = "wfo-input-label";
+  heading.textContent = "Folder color:";
+  heading.style.marginBottom = "8px";
+  menu.appendChild(heading);
+
+  let hsv = hexToHsv(currentColor) || { h: 210, s: 0.7, v: 0.9 };
+
+  // Preset swatches (vivid) — the common case, shown first
+  const grid = document.createElement("div");
+  grid.className = "wfo-color-grid";
+  const swatchEls = [];
+  for (const c of WFO_COLOR_PRESETS) {
+    const sw = document.createElement("button");
+    sw.className = "wfo-swatch";
+    sw.style.background = c;
+    sw.title = c;
+    sw.dataset.color = c;
+    // Selecting a preset only previews it; Apply / Apply to all commit it.
+    sw.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hsv = hexToHsv(c) || hsv;
+      render();
+    });
+    grid.appendChild(sw);
+    swatchEls.push(sw);
+  }
+  menu.appendChild(grid);
+
+  // Highlight the swatch matching the current color with a checkmark.
+  function markActiveSwatch() {
+    const cur = currentHex().toLowerCase();
+    for (const sw of swatchEls) {
+      const on = sw.dataset.color.toLowerCase() === cur;
+      sw.classList.toggle("wfo-swatch-active", on);
+      sw.innerHTML = on ? `<span class="pi pi-check wfo-swatch-check"></span>` : "";
+    }
+  }
+
+  // "Custom…" toggle reveals the inline gradient picker
+  const customToggle = document.createElement("div");
+  customToggle.className = "wfo-context-item wfo-custom-toggle";
+  customToggle.innerHTML = `<span class="pi pi-palette wfo-icon"></span><span class="wfo-label">Custom color</span><span class="pi pi-chevron-down wfo-custom-chevron"></span>`;
+  menu.appendChild(customToggle);
+
+  // Gradient picker (hidden until toggled)
+  const gradientWrap = document.createElement("div");
+  gradientWrap.className = "wfo-gradient-wrap";
+  gradientWrap.style.display = "none";
+  const sv = document.createElement("div");
+  sv.className = "wfo-sv-area";
+  const svHandle = document.createElement("div");
+  svHandle.className = "wfo-sv-handle";
+  sv.appendChild(svHandle);
+  gradientWrap.appendChild(sv);
+
+  const hue = document.createElement("div");
+  hue.className = "wfo-hue-slider";
+  const hueHandle = document.createElement("div");
+  hueHandle.className = "wfo-hue-handle";
+  hue.appendChild(hueHandle);
+  gradientWrap.appendChild(hue);
+  menu.appendChild(gradientWrap);
+
+  customToggle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const open = gradientWrap.style.display === "none";
+    gradientWrap.style.display = open ? "block" : "none";
+    customToggle.classList.toggle("wfo-custom-open", open);
+    if (open) render();
+  });
+
+  // Preview + hex + apply
+  const row = document.createElement("div");
+  row.className = "wfo-color-row";
+  const preview = document.createElement("div");
+  preview.className = "wfo-color-preview";
+  const hexWrap = document.createElement("div");
+  hexWrap.className = "wfo-hex-wrap";
+  const hexHash = document.createElement("span");
+  hexHash.className = "wfo-hex-hash";
+  hexHash.textContent = "#";
+  const hex = document.createElement("input");
+  hex.type = "text";
+  hex.className = "wfo-inline-input wfo-hex-input";
+  hex.placeholder = "RRGGBB";
+  hex.maxLength = 6;
+  hexWrap.appendChild(hexHash);
+  hexWrap.appendChild(hex);
+  const apply = document.createElement("button");
+  apply.className = "wfo-sel-btn wfo-btn-primary wfo-color-apply";
+  apply.textContent = "Apply";
+  row.appendChild(preview);
+  row.appendChild(hexWrap);
+  row.appendChild(apply);
+  menu.appendChild(row);
+
+  function currentHex() {
+    const [r, g, b] = hsvToRgb(hsv.h, hsv.s, hsv.v);
+    return rgbToHex(r, g, b);
+  }
+  function render(updateHexField = true) {
+    sv.style.background =
+      `linear-gradient(to top, #000, rgba(0,0,0,0)),` +
+      `linear-gradient(to right, #fff, rgba(255,255,255,0)),` +
+      `hsl(${hsv.h}, 100%, 50%)`;
+    svHandle.style.left = hsv.s * 100 + "%";
+    svHandle.style.top = (1 - hsv.v) * 100 + "%";
+    hueHandle.style.left = (hsv.h / 360) * 100 + "%";
+    const hx = currentHex();
+    preview.style.background = hx;
+    if (updateHexField) hex.value = hx.replace("#", "");
+    markActiveSwatch();
+  }
+
+  bindDragArea(sv, (x, y) => { hsv.s = x; hsv.v = 1 - y; render(); });
+  bindDragArea(hue, (x) => { hsv.h = x * 360; render(); });
+
+  hex.addEventListener("mousedown", (e) => e.stopPropagation());
+  hex.addEventListener("input", () => {
+    const parsed = hexToHsv(hex.value.trim());
+    if (parsed) { hsv = parsed; render(false); }
+  });
+  hex.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); removeContextMenu(); onPick(currentHex()); }
+    else if (e.key === "Escape") { removeContextMenu(); }
+  });
+  apply.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); removeContextMenu(); onPick(currentHex()); });
+
+  // "Apply to all" — a button (not a menu row): sets every folder to this color
+  const applyAllRow = document.createElement("div");
+  applyAllRow.className = "wfo-apply-all-row";
+  const applyAll = document.createElement("button");
+  applyAll.className = "wfo-sel-btn wfo-apply-all-btn";
+  applyAll.textContent = "Apply to all";
+  applyAll.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const col = currentHex();
+    removeContextMenu();
+    if (confirm(`Set ALL folders to ${col}?\nThis overwrites their current colors. (You can undo.)`)) {
+      applyColorToAllFolders(col).catch((err) => {
+        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Apply to all failed", detail: err.message, life: 5000 }); } catch (_) {}
+      });
+    }
+  });
+  applyAllRow.appendChild(applyAll);
+  menu.appendChild(applyAllRow);
+
+  // Divider between the color-picking section and the settings/reset actions
+  const divider = document.createElement("div");
+  divider.className = "wfo-menu-divider";
+  menu.appendChild(divider);
+
+  // Global look toggle: filled vs. outline folder icons (real checkbox)
+  const filledToggle = document.createElement("div");
+  filledToggle.className = "wfo-context-item wfo-filled-toggle";
+  const renderFilledToggle = () => {
+    const on = getFilledMode();
+    filledToggle.innerHTML =
+      `<span class="wfo-checkbox ${on ? "wfo-checkbox-on" : ""}">${on ? '<span class="pi pi-check"></span>' : ""}</span>` +
+      `<span class="wfo-label">Filled folder icons</span>`;
+  };
+  renderFilledToggle();
+  filledToggle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFilledMode(!getFilledMode());
+    renderFilledToggle();
+    const panel = findWorkflowsPanel();
+    if (panel) applyFolderColors(panel);
+  });
+  menu.appendChild(filledToggle);
+
+  const reset = document.createElement("div");
+  reset.className = "wfo-context-item wfo-color-reset";
+  reset.innerHTML = `<span class="pi pi-times wfo-icon"></span><span class="wfo-label">Reset color</span>`;
+  reset.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); removeContextMenu(); onPick(""); });
+  menu.appendChild(reset);
+
+  const resetAll = document.createElement("div");
+  resetAll.className = "wfo-context-item wfo-color-reset";
+  resetAll.innerHTML = `<span class="pi pi-times-circle wfo-icon"></span><span class="wfo-label">Reset all colors</span>`;
+  resetAll.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    removeContextMenu();
+    if (confirm("Clear the color of ALL folders? (You can undo.)")) {
+      resetAllFolders().catch((err) => {
+        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Reset all failed", detail: err.message, life: 5000 }); } catch (_) {}
+      });
+    }
+  });
+  menu.appendChild(resetAll);
+
+  render();
+  applyMenuMetrics(menu, nativeMenuMetrics);
+}
+
 // ── Undo support ──────────────────────────────────────────────────────────
 let undoBar = null;
 let undoTimer = null;
@@ -1028,12 +1301,29 @@ function showFolderContextMenu(e, item) {
     }
   });
 
+  const setColor = document.createElement("div");
+  setColor.className = "wfo-context-item";
+  setColor.innerHTML = `<span class="pi pi-palette wfo-icon"></span><span class="wfo-label">Set Color</span>`;
+  setColor.addEventListener("mousedown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const folderRel = buildPath(item);
+    transformMenuToColorPicker(menu, folderColors[folderRel] || "", async (color) => {
+      try {
+        await setFolderColor(folderRel, color);
+      } catch (err) {
+        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
+      }
+    });
+  });
+
   const moveTo = makeMoveToItem(menu, item, true);
   const newFolderRoot = makeNewFolderItem(menu, "", "New Folder");
   const newSubFolder = makeNewFolderItem(menu, buildPath(item), "New Sub Folder", "pi-folder-plus", "New subfolder name:");
 
   document.body.appendChild(menu);
   menu.appendChild(renameFolder);
+  menu.appendChild(setColor);
   menu.appendChild(duplicateFolder_);
   menu.appendChild(moveTo);
   menu.appendChild(newFolderRoot);
@@ -1343,6 +1633,159 @@ function injectStyles() {
     .wfo-sel-btn:hover { background: var(--content-hover-bg, #333); }
     .wfo-sel-move:hover { border-color: var(--p-primary-color, #4a9eff); color: var(--p-primary-color, #4a9eff); }
     .wfo-sel-del:hover { border-color: #ff6b6b; color: #ff6b6b; }
+    .wfo-color-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+    .wfo-swatch {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        border-radius: 50%;
+        border: 2px solid transparent;
+        cursor: pointer;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.1s, border-color 0.1s;
+    }
+    .wfo-swatch:hover { transform: scale(1.15); }
+    .wfo-swatch-active { border-color: var(--input-text, #fff); }
+    .wfo-swatch-check {
+        color: #fff;
+        font-size: 11px;
+        font-weight: bold;
+        text-shadow: 0 0 2px rgba(0,0,0,0.85), 0 0 3px rgba(0,0,0,0.6);
+        pointer-events: none;
+    }
+    .wfo-color-row { display: flex; align-items: center; gap: 8px; margin: 10px 0 8px; }
+    .wfo-hex-wrap {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        border: 1px solid var(--border-color, #4e4e4e);
+        border-radius: 4px;
+        padding: 0 6px;
+        background: var(--comfy-input-bg, #222);
+    }
+    .wfo-hex-hash { color: var(--descrip-text, #999); flex: 0 0 auto; }
+    .wfo-hex-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        border: none !important;
+        background: transparent !important;
+        padding: 5px 0 !important;
+        outline: none;
+    }
+    .wfo-folder-filled::before {
+        content: "" !important;
+        display: inline-block;
+        width: 1rem;
+        height: 1rem;
+        vertical-align: middle;
+        background-color: currentColor;
+        -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='2 4 20 16'%3E%3Cpath d='M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z'/%3E%3C/svg%3E") center / contain no-repeat;
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='2 4 20 16'%3E%3Cpath d='M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
+    .pi-folder-open.wfo-folder-filled::before {
+        -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 576 512'%3E%3Cpath d='M572.694 292.093L500.27 416.248A63.997 63.997 0 0 1 444.989 448H45.025c-18.523 0-30.064-20.093-20.731-36.093l72.424-124.155A64 64 0 0 1 152.999 256h399.964c18.523 0 30.064 20.093 20.731 36.093zM152.999 224h328.66l-7.736-31.471A48 48 0 0 0 427.13 160H272V104a48 48 0 0 0-48-48H48A48 48 0 0 0 0 104v292.293l69.044-118.36C86.347 248.351 117.886 224 152.999 224z'/%3E%3C/svg%3E") center / contain no-repeat;
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 576 512'%3E%3Cpath d='M572.694 292.093L500.27 416.248A63.997 63.997 0 0 1 444.989 448H45.025c-18.523 0-30.064-20.093-20.731-36.093l72.424-124.155A64 64 0 0 1 152.999 256h399.964c18.523 0 30.064 20.093 20.731 36.093zM152.999 224h328.66l-7.736-31.471A48 48 0 0 0 427.13 160H272V104a48 48 0 0 0-48-48H48A48 48 0 0 0 0 104v292.293l69.044-118.36C86.347 248.351 117.886 224 152.999 224z'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
+    .wfo-color-preview {
+        width: 26px; height: 26px; flex: 0 0 auto;
+        border-radius: 4px; border: 1px solid var(--border-color, #4e4e4e);
+    }
+    .wfo-color-apply { flex: 0 0 auto; padding: 5px 10px; }
+    .wfo-btn-primary {
+        background: var(--p-primary-color, #4a8cff);
+        border-color: var(--p-primary-color, #4a8cff);
+        color: #fff;
+        font-weight: 500;
+    }
+    .wfo-btn-primary:hover {
+        background: var(--p-primary-color, #4a8cff);
+        filter: brightness(1.12);
+    }
+    .wfo-color-reset { padding: 6px 4px; border-radius: 4px; }
+    .wfo-apply-all-row { margin: 0 0 4px; }
+    .wfo-apply-all-btn { width: 100%; justify-content: center; padding: 6px 10px; }
+    .wfo-menu-divider {
+        height: 1px;
+        background: var(--border-color, #6a6a6a);
+        opacity: 1;
+        margin: 10px -10px 8px;
+    }
+    .wfo-checkbox {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 auto;
+        margin-left: 0;
+        margin-right: 12px;
+        box-sizing: border-box;
+        border: 1.5px solid var(--border-color, #888);
+        border-radius: 3px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        color: #fff;
+        pointer-events: none;
+    }
+    .wfo-checkbox-on {
+        background: var(--p-primary-color, #4a8cff);
+        border-color: var(--p-primary-color, #4a8cff);
+    }
+    .wfo-custom-toggle { padding: 6px 4px; border-radius: 4px; }
+    .wfo-custom-chevron {
+        margin-left: auto;
+        font-size: 11px;
+        opacity: 0.7;
+        transition: transform 0.15s;
+    }
+    .wfo-custom-open .wfo-custom-chevron { transform: rotate(180deg); }
+    .wfo-gradient-wrap { margin-top: 8px; }
+    .wfo-sv-area {
+        position: relative;
+        width: 100%;
+        height: 120px;
+        border-radius: 5px;
+        cursor: crosshair;
+        touch-action: none;
+    }
+    .wfo-sv-handle {
+        position: absolute;
+        width: 12px; height: 12px;
+        border: 2px solid #fff;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 2px rgba(0,0,0,0.7);
+        pointer-events: none;
+    }
+    .wfo-hue-slider {
+        position: relative;
+        width: 100%;
+        height: 14px;
+        margin-top: 8px;
+        border-radius: 7px;
+        cursor: pointer;
+        touch-action: none;
+        background: linear-gradient(to right,
+            #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%);
+    }
+    .wfo-hue-handle {
+        position: absolute;
+        top: 50%;
+        width: 14px; height: 14px;
+        border: 2px solid #fff;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 2px rgba(0,0,0,0.7);
+        pointer-events: none;
+    }
     .wfo-current-tag {
         font-size: 9px;
         text-transform: uppercase;
@@ -1452,6 +1895,81 @@ function applyPlaceholderBadges(panel) {
   }
 }
 
+// Map of folder rel-path → hex color
+let folderColors = {};
+async function loadFolderColors() {
+  try {
+    const resp = await api.fetchApi("/wfo/colors");
+    if (resp.ok) folderColors = await resp.json();
+  } catch (_) {}
+}
+
+// Global "filled folder icons" look — a per-browser display preference.
+// Default on (matches the look colors shipped with). Only colored folders
+// are filled; uncolored ones keep ComfyUI's default outline icon.
+function getFilledMode() {
+  try { return localStorage.getItem("wfo_filled") !== "0"; } catch (_) { return true; }
+}
+function setFilledMode(on) {
+  try { localStorage.setItem("wfo_filled", on ? "1" : "0"); } catch (_) {}
+}
+
+function applyFolderColors(panel) {
+  const filled = getFilledMode();
+  panel.querySelectorAll("[role='treeitem']").forEach((el) => {
+    if (el.classList.contains("p-tree-node-leaf")) return;
+    const icon = el.querySelector(".pi-folder, .pi-folder-open");
+    if (!icon) return;
+    const color = folderColors[buildPath(el)];
+    icon.style.color = color || "";
+    icon.classList.toggle("wfo-folder-filled", !!color && filled);
+  });
+}
+
+async function setFolderColor(folderRel, color) {
+  const resp = await api.fetchApi("/wfo/colors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: folderRel, color: color || "" }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  await loadFolderColors();
+  const panel = findWorkflowsPanel();
+  if (panel) applyFolderColors(panel);
+}
+
+// Replace the whole color map in one request (used by "Apply to all" + undo).
+async function bulkSetColors(map) {
+  const resp = await api.fetchApi("/wfo/colors/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ colors: map }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  await loadFolderColors();
+  const panel = findWorkflowsPanel();
+  if (panel) applyFolderColors(panel);
+}
+
+// Set every folder to one color at once (overwrites existing colors); undoable.
+async function applyColorToAllFolders(color) {
+  const folders = await getAllFolders();
+  if (!folders.length) return;
+  const prev = { ...folderColors };
+  const next = {};
+  for (const f of folders) next[f] = color;
+  await bulkSetColors(next);
+  registerUndo("Colored all folders", () => bulkSetColors(prev));
+}
+
+// Clear the color of every folder at once; undoable.
+async function resetAllFolders() {
+  const prev = { ...folderColors };
+  if (!Object.keys(prev).length) return;
+  await bulkSetColors({});
+  registerUndo("Cleared all folder colors", () => bulkSetColors(prev));
+}
+
 app.registerExtension({
   name: EXTENSION_NAME,
   async setup() {
@@ -1464,6 +1982,7 @@ app.registerExtension({
         attachDragHandlers(panel);
         ensurePlaceholders();
         loadPlaceholderFolders().then(() => applyPlaceholderBadges(panel));
+        loadFolderColors().then(() => applyFolderColors(panel));
         // Right-click on empty sidebar space → create a root folder.
         // Climb to the full-height sidebar container (same column width as the
         // tree) so empty space below the list is covered too.
@@ -1485,6 +2004,7 @@ app.registerExtension({
         const treeObserver = new MutationObserver(() => {
           attachDragHandlers(panel);
           applyPlaceholderBadges(panel);
+          applyFolderColors(panel);
           ensurePlaceholders();
           // Keep the highlight on re-render. Don't prune by visibility — a
           // selected file in a collapsed folder is simply not shown, not gone.

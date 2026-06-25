@@ -81,6 +81,55 @@ def _resolve_safe(base, rel):
     return None
 
 
+# ── Per-folder metadata (colors), stored beside the workflows dir ────────────
+def _meta_file(base):
+    return os.path.join(base, ".wfo_meta.json")
+
+
+def _load_meta(base):
+    f = _meta_file(base)
+    if os.path.isfile(f):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_meta(base, data):
+    try:
+        with open(_meta_file(base), "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except Exception:
+        pass
+
+
+def _remap_color_keys(base, old_rel, new_rel):
+    """When a folder is renamed/moved, move its color (and any subfolders')."""
+    old_rel = old_rel.replace("\\", "/").strip("/")
+    new_rel = new_rel.replace("\\", "/").strip("/")
+    # keys are relative to the workflows dir
+    prefix = "workflows/"
+    if old_rel.startswith(prefix):
+        old_rel = old_rel[len(prefix):]
+    if new_rel.startswith(prefix):
+        new_rel = new_rel[len(prefix):]
+    meta = _load_meta(base)
+    colors = meta.get("colors", {})
+    changed = False
+    for key in list(colors.keys()):
+        if key == old_rel:
+            colors[new_rel] = colors.pop(key)
+            changed = True
+        elif key.startswith(old_rel + "/"):
+            colors[new_rel + key[len(old_rel):]] = colors.pop(key)
+            changed = True
+    if changed:
+        meta["colors"] = colors
+        _save_meta(base, meta)
+
+
 @PromptServer.instance.routes.post("/wfo/folder")
 async def create_wfo_folder(request):
     try:
@@ -210,6 +259,80 @@ async def restore_trash(request):
         return web.Response(status=500, text=str(e))
 
 
+@PromptServer.instance.routes.get("/wfo/colors")
+async def get_colors(request):
+    """Return the folder→hex-color map (keys relative to the workflows dir)."""
+    try:
+        base = _get_user_base(request)
+        if not base:
+            return web.json_response({})
+        return web.json_response(_load_meta(base).get("colors", {}))
+    except Exception:
+        return web.json_response({})
+
+
+@PromptServer.instance.routes.post("/wfo/colors")
+async def set_color(request):
+    """Set (or clear, when color is empty) a folder's color."""
+    try:
+        data = await request.json()
+        rel = data.get("path", "").replace("\\", "/").strip("/")
+        color = (data.get("color") or "").strip()
+        if not rel or ".." in rel.split("/"):
+            return web.Response(status=400, text="Invalid path")
+        # basic hex validation when setting
+        if color and not (color.startswith("#") and len(color) in (4, 7)):
+            return web.Response(status=400, text="Invalid color")
+
+        base = _get_user_base(request)
+        if not base:
+            return web.Response(status=404, text="Workflows directory not found")
+
+        meta = _load_meta(base)
+        colors = meta.get("colors", {})
+        if color:
+            colors[rel] = color
+        else:
+            colors.pop(rel, None)
+        meta["colors"] = colors
+        _save_meta(base, meta)
+        return web.Response(status=200)
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+
+@PromptServer.instance.routes.post("/wfo/colors/bulk")
+async def set_colors_bulk(request):
+    """Replace the entire folder->color map (used by 'Apply to all' + its undo)."""
+    try:
+        data = await request.json()
+        incoming = data.get("colors", {})
+        if not isinstance(incoming, dict):
+            return web.Response(status=400, text="Invalid colors")
+
+        clean = {}
+        for rel, color in incoming.items():
+            rel = str(rel).replace("\\", "/").strip("/")
+            color = (color or "").strip()
+            if not rel or ".." in rel.split("/"):
+                continue
+            if color and not (color.startswith("#") and len(color) in (4, 7)):
+                continue
+            if color:
+                clean[rel] = color
+
+        base = _get_user_base(request)
+        if not base:
+            return web.Response(status=404, text="Workflows directory not found")
+
+        meta = _load_meta(base)
+        meta["colors"] = clean
+        _save_meta(base, meta)
+        return web.Response(status=200)
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+
 @PromptServer.instance.routes.post("/wfo/ensure-placeholders")
 async def ensure_placeholders(request):
     """Walk the workflows dir; add placeholder.json to any folder missing one.
@@ -263,6 +386,7 @@ async def rename_wfo_folder(request):
             return web.Response(status=409, text="Destination already exists")
 
         os.rename(src, dst)
+        _remap_color_keys(base, old_rel, new_rel)
         return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))

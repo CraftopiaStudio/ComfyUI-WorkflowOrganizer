@@ -7,7 +7,7 @@ tags:
   - github
   - registry
   - craftopiastudio
-updated: 2026-06-24
+updated: 2026-06-25
 ---
 
 # ComfyUI-WorkflowOrganizer
@@ -114,10 +114,17 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 - [x] Bulk delete naar prullenbak (generiek `/wfo/trash` endpoint, ook voor losse bestanden) met undo
 - [x] Selectie blijft intact bij re-render (geen pruning op zichtbaarheid; ingeklapte map = niet getoond, niet weg)
 
-### Later / Ideeën
+### v0.8.0 — Map-kleuren ✅
+- [x] Rechtsklik op map → "Set Color" → kleurkiezer in het folder-menu
+- [x] 12 vivid preset-swatches; preset klikken = selecteren (preview + vinkje), menu blijft open
+- [x] "Custom color" knop klapt een inline gradient picker uit (SV-vlak + hue-slider); hex-veld met vaste grijze `#` ervoor
+- [x] **Apply** (primaire knop) zet de kleur op deze map; **Apply to all** zet 'm op alle mappen (confirm + undo, bulk-endpoint)
+- [x] **Reset color** wist deze map; **Reset all colors** wist alle mappen (confirm + undo)
+- [x] Gevulde folder-icoontjes in de tree (CSS mask), globaal aan/uit via "Filled folder icons" toggle; eigen gevulde *open*-map als de map openstaat
+- [x] Per-map metadata in verborgen `.wfo_meta.json` (buiten de tree); kleur overleeft rename/move via `_remap_color_keys`
+- [x] Endpoints `GET/POST /wfo/colors` + `POST /wfo/colors/bulk`; hex gevalideerd; multi-user via `_get_user_base`
 
-**Features**
-- [ ] **Map-kleuren of emoji** — visuele organisatie per map (vergt per-map metadata-opslag); puur cosmetisch
+### Later / Ideeën
 
 **Robuustheid**
 - [ ] **Netjes falen bij ComfyUI frontend-updates** — defensieve selectors + fallbacks, niet crashen als een element ontbreekt, evt. een nette waarschuwing bij een onbekende frontend-versie (geen volledige oplossing mogelijk; hangt af van ComfyUI's interne PrimeVue DOM)
@@ -134,7 +141,7 @@ Drag-and-drop workflow organisatie voor de ComfyUI sidebar. Gebruikers kunnen `.
 
 ## Notities
 
-- Huidige versie: **v0.7.0**
+- Huidige versie: **v0.8.0**
 - Zero dependencies. JS-extensie + lichte Python-endpoints (geen zware nodes).
 - ComfyUI v0.3.0+ vereist (heeft `/userdata/{file}/move/{dest}` endpoint nodig).
 - **Python-wijzigingen vereisen een ComfyUI-herstart; JS-wijzigingen alleen een browser refresh.**
