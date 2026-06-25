@@ -222,16 +222,19 @@ function fileItemFromEvent(e) {
 // be claimed for selection while a plain click still loads the workflow.
 function installSelectionHandlers() {
   const blockModifierDown = (e) => {
-    if (e.button !== 0 && e.button !== undefined) return;
-    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
-    if (!fileItemFromEvent(e)) return;
-    e.preventDefault();
-    e.stopPropagation();
+    try {
+      if (e.button !== 0 && e.button !== undefined) return;
+      if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
+      if (!fileItemFromEvent(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    } catch (_) {}
   };
   document.addEventListener("pointerdown", blockModifierDown, true);
   document.addEventListener("mousedown", blockModifierDown, true);
 
   document.addEventListener("click", (e) => {
+    try {
     const found = fileItemFromEvent(e);
     if (!found) return;
     const { item, panel } = found;
@@ -258,6 +261,7 @@ function installSelectionHandlers() {
       }
       selectionAnchor = path;
     }
+    } catch (_) {}
   }, true);
 }
 
@@ -1975,9 +1979,14 @@ app.registerExtension({
   async setup() {
     injectStyles();
     installSelectionHandlers();
+    let wfoPanelReady = false;
+    let wfoReadyTimer;
     const bodyObserver = new MutationObserver(() => {
+      try {
       const panel = findWorkflowsPanel();
       if (panel && !panel.dataset.wfoInit) {
+        wfoPanelReady = true;
+        clearTimeout(wfoReadyTimer);
         panel.dataset.wfoInit = "1";
         attachDragHandlers(panel);
         ensurePlaceholders();
@@ -1995,32 +2004,43 @@ app.registerExtension({
         }
         // Item handlers set itemContextActive; if they did, this was on an item.
         shell.addEventListener("contextmenu", (e) => {
-          if (itemContextActive) { itemContextActive = false; return; }
-          // Ignore the search box, headers, buttons, and any tree item
-          if (e.target.closest("input, textarea, button, [role='treeitem'], .p-inputtext, [class*='search']")) return;
-          e.preventDefault();
-          showEmptyAreaMenu(e);
+          try {
+            if (itemContextActive) { itemContextActive = false; return; }
+            if (e.target.closest("input, textarea, button, [role='treeitem'], .p-inputtext, [class*='search']")) return;
+            e.preventDefault();
+            showEmptyAreaMenu(e);
+          } catch (_) {}
         });
         const treeObserver = new MutationObserver(() => {
-          attachDragHandlers(panel);
-          applyPlaceholderBadges(panel);
-          applyFolderColors(panel);
-          ensurePlaceholders();
-          // Keep the highlight on re-render. Don't prune by visibility — a
-          // selected file in a collapsed folder is simply not shown, not gone.
-          if (selectedPaths.size) applySelectionStyles(panel);
+          try {
+            attachDragHandlers(panel);
+            applyPlaceholderBadges(panel);
+            applyFolderColors(panel);
+            ensurePlaceholders();
+            if (selectedPaths.size) applySelectionStyles(panel);
+          } catch (err) {
+            console.warn("[WFO] treeObserver error, continuing:", err);
+          }
         });
         treeObserver.observe(panel, { childList: true, subtree: true });
       }
+      } catch (err) {
+        console.warn("[WFO] bodyObserver error, continuing:", err);
+      }
     });
     bodyObserver.observe(document.body, { childList: true, subtree: true });
+    wfoReadyTimer = setTimeout(() => {
+      if (!wfoPanelReady) console.warn("[WFO] WorkflowOrganizer: tree panel not found — ComfyUI frontend may have changed, extension inactive.");
+    }, 15000);
 
     // Escape clears the current selection
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && selectedPaths.size) {
-        const panel = findWorkflowsPanel();
-        if (panel) clearSelection(panel);
-      }
+      try {
+        if (e.key === "Escape" && selectedPaths.size) {
+          const panel = findWorkflowsPanel();
+          if (panel) clearSelection(panel);
+        }
+      } catch (_) {}
     });
   },
 });
