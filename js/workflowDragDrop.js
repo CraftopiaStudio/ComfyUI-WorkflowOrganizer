@@ -56,6 +56,19 @@ async function restoreTrash(token, destRel) {
   if (!resp.ok) throw new Error(await resp.text());
 }
 
+async function duplicateFile(filePath) {
+  const resp = await api.fetchApi("/wfo/file/copy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: `workflows/${filePath}.json` }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Duplicate failed (${resp.status}): ${text}`);
+  }
+  return (await resp.json()).new_name;
+}
+
 async function duplicateFolder(folderPath) {
   const resp = await api.fetchApi("/wfo/folder/copy", {
     method: "POST",
@@ -1190,6 +1203,26 @@ function showContextMenu(e, item) {
         menu.style.left = rect.left + "px";
         menu.style.top = rect.bottom + "px";
         menu.style.width = rect.width + "px";
+        // Replace native "Duplicate" (opens tab) with file copy on disk
+        try {
+          for (const el of realMenu.querySelectorAll("a, [class*='item-link'], [class*='item-content']")) {
+            if (el.textContent.trim() === "Duplicate") {
+              const clone = el.cloneNode(true);
+              clone.addEventListener("click", async () => {
+                const path = buildPath(item);
+                try {
+                  const newName = await duplicateFile(path);
+                  try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow duplicated", detail: newName.replace(/\.json$/, ""), life: 3000 }); } catch (_) {}
+                  await refreshWorkflowSidebar();
+                } catch (err) {
+                  try { app.extensionManager?.toast?.add({ severity: "error", summary: "Duplicate failed", detail: err.message, life: 5000 }); } catch (_) {}
+                }
+              });
+              el.parentNode.replaceChild(clone, el);
+              break;
+            }
+          }
+        } catch (_) {}
     } else {
         menu.style.left = e.clientX + "px";
         menu.style.top = e.clientY + "px";

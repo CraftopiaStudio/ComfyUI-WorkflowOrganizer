@@ -392,6 +392,38 @@ async def rename_wfo_folder(request):
         return web.Response(status=500, text=str(e))
 
 
+@PromptServer.instance.routes.post("/wfo/file/copy")
+async def copy_wfo_file(request):
+    try:
+        data = await request.json()
+        rel = data.get("path", "").replace("\\", "/").strip("/")
+        if not rel or ".." in rel.split("/"):
+            return web.Response(status=400, text="Invalid path")
+
+        base = _get_user_base(request)
+        if not base:
+            return web.Response(status=404, text="Workflows directory not found")
+
+        src = _resolve_safe(base, rel)
+        if not src or not os.path.isfile(src):
+            return web.Response(status=404, text="File not found")
+
+        stem, ext = os.path.splitext(os.path.basename(src))
+        parent = os.path.dirname(src)
+        copy_name = f"{stem} copy{ext}"
+        dst = os.path.join(parent, copy_name)
+        counter = 2
+        while os.path.exists(dst):
+            copy_name = f"{stem} copy {counter}{ext}"
+            dst = os.path.join(parent, copy_name)
+            counter += 1
+
+        shutil.copy2(src, dst)
+        return web.json_response({"new_name": copy_name})
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+
 @PromptServer.instance.routes.post("/wfo/folder/copy")
 async def copy_wfo_folder(request):
     try:
