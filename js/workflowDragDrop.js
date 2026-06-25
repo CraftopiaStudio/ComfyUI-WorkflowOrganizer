@@ -659,9 +659,9 @@ async function transformMenuToFolderList(menu, { isExcluded, currentRel, onPick 
 
 // Preset folder colors for the picker
 const WFO_COLOR_PRESETS = [
-  "#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16",
-  "#22c55e", "#14b8a6", "#3b82f6", "#6366f1", "#a855f7",
-  "#ec4899", "#94a3b8",
+  "#ef4444", "#f97316", "#eab308", "#84cc16",
+  "#16a34a", "#00f7ff", "#38bdf8", "#6366f1", "#a855f7",
+  "#ec4899", "#f700ff",
 ];
 
 // ── Colour conversion ───────────────────────────────────────────────────────
@@ -723,7 +723,7 @@ function bindDragArea(el, onMove) {
 
 // Transform a context menu into a folder-color picker: inline gradient picker
 // (SV area + hue slider) + vivid preset swatches + hex input + reset.
-function transformMenuToColorPicker(menu, currentColor, onPick) {
+function transformMenuToColorPicker(menu, currentColor, onPick, { showFolderOptions = true } = {}) {
   menu.innerHTML = "";
   menu.classList.add("wfo-standalone");
   menu.style.width = "220px";
@@ -731,7 +731,7 @@ function transformMenuToColorPicker(menu, currentColor, onPick) {
 
   const heading = document.createElement("div");
   heading.className = "wfo-input-label";
-  heading.textContent = "Folder color:";
+  heading.textContent = showFolderOptions ? "Folder color:" : "File color:";
   heading.style.marginBottom = "8px";
   menu.appendChild(heading);
 
@@ -757,6 +757,14 @@ function transformMenuToColorPicker(menu, currentColor, onPick) {
     grid.appendChild(sw);
     swatchEls.push(sw);
   }
+
+  // Rainbow swatch opens the custom gradient picker
+  const rainbowSwatch = document.createElement("button");
+  rainbowSwatch.className = "wfo-swatch wfo-swatch-rainbow";
+  rainbowSwatch.title = "Custom color";
+  rainbowSwatch.innerHTML = `<span class="pi pi-palette"></span>`;
+  grid.appendChild(rainbowSwatch);
+
   menu.appendChild(grid);
 
   // Highlight the swatch matching the current color with a checkmark.
@@ -769,13 +777,7 @@ function transformMenuToColorPicker(menu, currentColor, onPick) {
     }
   }
 
-  // "Custom…" toggle reveals the inline gradient picker
-  const customToggle = document.createElement("div");
-  customToggle.className = "wfo-context-item wfo-custom-toggle";
-  customToggle.innerHTML = `<span class="pi pi-palette wfo-icon"></span><span class="wfo-label">Custom color</span><span class="pi pi-chevron-down wfo-custom-chevron"></span>`;
-  menu.appendChild(customToggle);
-
-  // Gradient picker (hidden until toggled)
+  // Gradient picker (hidden until toggled via rainbow swatch)
   const gradientWrap = document.createElement("div");
   gradientWrap.className = "wfo-gradient-wrap";
   gradientWrap.style.display = "none";
@@ -794,12 +796,12 @@ function transformMenuToColorPicker(menu, currentColor, onPick) {
   gradientWrap.appendChild(hue);
   menu.appendChild(gradientWrap);
 
-  customToggle.addEventListener("mousedown", (e) => {
+  rainbowSwatch.addEventListener("mousedown", (e) => {
     e.preventDefault();
     e.stopPropagation();
     const open = gradientWrap.style.display === "none";
     gradientWrap.style.display = open ? "block" : "none";
-    customToggle.classList.toggle("wfo-custom-open", open);
+    rainbowSwatch.classList.toggle("wfo-swatch-active", open);
     if (open) render();
   });
 
@@ -860,50 +862,55 @@ function transformMenuToColorPicker(menu, currentColor, onPick) {
   });
   apply.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); removeContextMenu(); onPick(currentHex()); });
 
-  // "Apply to all" — a button (not a menu row): sets every folder to this color
-  const applyAllRow = document.createElement("div");
-  applyAllRow.className = "wfo-apply-all-row";
-  const applyAll = document.createElement("button");
-  applyAll.className = "wfo-sel-btn wfo-apply-all-btn";
-  applyAll.textContent = "Apply to all";
-  applyAll.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const col = currentHex();
-    removeContextMenu();
-    if (confirm(`Set ALL folders to ${col}?\nThis overwrites their current colors. (You can undo.)`)) {
-      applyColorToAllFolders(col).catch((err) => {
-        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Apply to all failed", detail: err.message, life: 5000 }); } catch (_) {}
+  if (showFolderOptions) {
+    const applyAllRow = document.createElement("div");
+    applyAllRow.className = "wfo-apply-all-row";
+    const applyAll = document.createElement("button");
+    applyAll.className = "wfo-sel-btn wfo-apply-all-btn";
+    applyAll.textContent = "Apply to all";
+    applyAll.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const col = currentHex();
+      removeContextMenu();
+      showWfoConfirm({
+        title: "Apply color to all folders?",
+        body: `Set every folder to <span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${col};vertical-align:middle;margin:0 4px"></span><b>${col}</b>. Overwrites existing colors.`,
+        confirmLabel: "Apply to all",
+        onConfirm: () => applyColorToAllFolders(col).catch((err) => {
+          try { app.extensionManager?.toast?.add({ severity: "error", summary: "Apply to all failed", detail: err.message, life: 5000 }); } catch (_) {}
+        }),
       });
-    }
-  });
-  applyAllRow.appendChild(applyAll);
-  menu.appendChild(applyAllRow);
+    });
+    applyAllRow.appendChild(applyAll);
+    menu.appendChild(applyAllRow);
+  }
 
-  // Divider between the color-picking section and the settings/reset actions
+  // Divider between the color-picking section and the reset action
   const divider = document.createElement("div");
   divider.className = "wfo-menu-divider";
   menu.appendChild(divider);
 
-  // Global look toggle: filled vs. outline folder icons (real checkbox)
-  const filledToggle = document.createElement("div");
-  filledToggle.className = "wfo-context-item wfo-filled-toggle";
-  const renderFilledToggle = () => {
-    const on = getFilledMode();
-    filledToggle.innerHTML =
-      `<span class="wfo-checkbox ${on ? "wfo-checkbox-on" : ""}">${on ? '<span class="pi pi-check"></span>' : ""}</span>` +
-      `<span class="wfo-label">Filled folder icons</span>`;
-  };
-  renderFilledToggle();
-  filledToggle.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setFilledMode(!getFilledMode());
+  if (showFolderOptions) {
+    const filledToggle = document.createElement("div");
+    filledToggle.className = "wfo-context-item wfo-filled-toggle";
+    const renderFilledToggle = () => {
+      const on = getFilledMode();
+      filledToggle.innerHTML =
+        `<span class="wfo-checkbox ${on ? "wfo-checkbox-on" : ""}">${on ? '<span class="pi pi-check"></span>' : ""}</span>` +
+        `<span class="wfo-label">Filled folder icons</span>`;
+    };
     renderFilledToggle();
-    const panel = findWorkflowsPanel();
-    if (panel) applyFolderColors(panel);
-  });
-  menu.appendChild(filledToggle);
+    filledToggle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setFilledMode(!getFilledMode());
+      renderFilledToggle();
+      const panel = findWorkflowsPanel();
+      if (panel) applyFolderColors(panel);
+    });
+    menu.appendChild(filledToggle);
+  }
 
   const reset = document.createElement("div");
   reset.className = "wfo-context-item wfo-color-reset";
@@ -911,23 +918,52 @@ function transformMenuToColorPicker(menu, currentColor, onPick) {
   reset.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); removeContextMenu(); onPick(""); });
   menu.appendChild(reset);
 
-  const resetAll = document.createElement("div");
-  resetAll.className = "wfo-context-item wfo-color-reset";
-  resetAll.innerHTML = `<span class="pi pi-times-circle wfo-icon"></span><span class="wfo-label">Reset all colors</span>`;
-  resetAll.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    removeContextMenu();
-    if (confirm("Clear the color of ALL folders? (You can undo.)")) {
-      resetAllFolders().catch((err) => {
-        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Reset all failed", detail: err.message, life: 5000 }); } catch (_) {}
+  if (showFolderOptions) {
+    const resetAll = document.createElement("div");
+    resetAll.className = "wfo-context-item wfo-color-reset";
+    resetAll.innerHTML = `<span class="pi pi-times-circle wfo-icon"></span><span class="wfo-label">Reset all colors</span>`;
+    resetAll.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeContextMenu();
+      showWfoConfirm({
+        title: "Reset all folder colors?",
+        body: "Clear the color of every folder. This can be undone.",
+        confirmLabel: "Reset all",
+        onConfirm: () => resetAllFolders().catch((err) => {
+          try { app.extensionManager?.toast?.add({ severity: "error", summary: "Reset all failed", detail: err.message, life: 5000 }); } catch (_) {}
+        }),
       });
-    }
-  });
-  menu.appendChild(resetAll);
+    });
+    menu.appendChild(resetAll);
+  }
 
   render();
   applyMenuMetrics(menu, nativeMenuMetrics);
+}
+
+// ── Confirm dialog (styled, matches ComfyUI dark theme) ──────────────────
+function showWfoConfirm({ title, body, onConfirm, confirmLabel = "Confirm", danger = false }) {
+  const overlay = document.createElement("div");
+  overlay.className = "wfo-dialog-overlay";
+  const dialog = document.createElement("div");
+  dialog.className = "wfo-dialog";
+  dialog.innerHTML =
+    `<div class="wfo-dialog-header"><span>${title}</span><button class="wfo-dialog-x">✕</button></div>` +
+    `<div class="wfo-dialog-body">${body}</div>` +
+    `<div class="wfo-dialog-footer">` +
+    `<button class="wfo-dialog-cancel">Cancel</button>` +
+    `<button class="wfo-dialog-ok${danger ? " wfo-dialog-danger" : ""}">${confirmLabel}</button>` +
+    `</div>`;
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  dialog.querySelector(".wfo-dialog-x").addEventListener("click", close);
+  dialog.querySelector(".wfo-dialog-cancel").addEventListener("click", close);
+  dialog.querySelector(".wfo-dialog-ok").addEventListener("click", () => { close(); onConfirm(); });
 }
 
 // ── Undo support ──────────────────────────────────────────────────────────
@@ -1081,7 +1117,17 @@ function updateSelectionBar(container) {
       `<button class="wfo-sel-btn wfo-sel-clear"><span class="pi pi-times"></span></button>`;
     document.body.appendChild(selectionBar);
     selectionBar.querySelector(".wfo-sel-move").addEventListener("click", () => showBulkMovePicker(container));
-    selectionBar.querySelector(".wfo-sel-del").addEventListener("click", () => bulkDeleteSelection(container));
+    selectionBar.querySelector(".wfo-sel-del").addEventListener("click", () => {
+      const n = selectedPaths.size;
+      const list = [...selectedPaths].map(p => `<li>${p.split("/").pop()}</li>`).join("");
+      showWfoConfirm({
+        title: `Delete ${n} workflow${n === 1 ? "" : "s"}?`,
+        body: `Are you sure you want to delete these workflows?<ul>${list}</ul>`,
+        confirmLabel: "Delete",
+        danger: true,
+        onConfirm: () => bulkDeleteSelection(container),
+      });
+    });
     selectionBar.querySelector(".wfo-sel-clear").addEventListener("click", () => clearSelection(container));
   }
   selectionBar.querySelector(".wfo-sel-count").textContent = `${n} selected`;
@@ -1201,7 +1247,7 @@ function showContextMenu(e, item) {
     if (realMenu) {
         const rect = realMenu.getBoundingClientRect();
         menu.style.left = rect.left + "px";
-        menu.style.top = rect.bottom + "px";
+        menu.style.top = (rect.bottom - 4) + "px";
         menu.style.width = rect.width + "px";
         // Replace native "Duplicate" (opens tab) with file copy on disk
         try {
@@ -1223,6 +1269,30 @@ function showContextMenu(e, item) {
             }
           }
         } catch (_) {}
+        // Replace native "Delete" with bulk delete when multiple items are selected
+        if (selectedPaths.size > 1 && selectedPaths.has(buildPath(item))) {
+          try {
+            for (const el of realMenu.querySelectorAll("a, [class*='item-link'], [class*='item-content']")) {
+              if (el.textContent.trim() === "Delete") {
+                const n = selectedPaths.size;
+                const paths = [...selectedPaths];
+                const clone = el.cloneNode(true);
+                clone.addEventListener("click", () => {
+                  const list = paths.map(p => `<li>${p.split("/").pop()}</li>`).join("");
+                  showWfoConfirm({
+                    title: `Delete ${n} workflow${n === 1 ? "" : "s"}?`,
+                    body: `Are you sure you want to delete these workflows?<ul>${list}</ul>`,
+                    confirmLabel: "Delete",
+                    danger: true,
+                    onConfirm: () => { const panel = findWorkflowsPanel(); if (panel) bulkDeleteSelection(panel); },
+                  });
+                });
+                el.parentNode.replaceChild(clone, el);
+                break;
+              }
+            }
+          } catch (_) {}
+        }
     } else {
         menu.style.left = e.clientX + "px";
         menu.style.top = e.clientY + "px";
@@ -1233,8 +1303,29 @@ function showContextMenu(e, item) {
   const moveTo = makeMoveToItem(menu, item, false);
   const newFolder = makeNewFolderItem(menu, "");
 
+  const wfoDivider = document.createElement("div");
+  wfoDivider.className = "wfo-context-divider";
+
+  const setColorItem = document.createElement("div");
+  setColorItem.className = "wfo-context-item";
+  setColorItem.innerHTML = `<span class="pi pi-palette wfo-icon"></span><span class="wfo-label">Set Color</span>`;
+  setColorItem.addEventListener("mousedown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const fileRel = buildPath(item);
+    transformMenuToColorPicker(menu, fileColors[fileRel] || "", async (color) => {
+      try {
+        await setFileColor(fileRel, color);
+      } catch (err) {
+        try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
+      }
+    }, { showFolderOptions: false });
+  });
+
   document.body.appendChild(menu);
+  menu.appendChild(wfoDivider);
   menu.appendChild(moveTo);
+  menu.appendChild(setColorItem);
   menu.appendChild(newFolder);
   contextMenu = menu;
   
@@ -1296,28 +1387,33 @@ function showFolderContextMenu(e, item) {
   deleteFolder_.className = "wfo-context-item wfo-danger";
   deleteFolder_.innerHTML = `<span class="pi pi-trash wfo-icon"></span><span class="wfo-label">Delete Folder</span>`;
 
-  deleteFolder_.addEventListener("mousedown", async (ev) => {
+  deleteFolder_.addEventListener("mousedown", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     removeContextMenu();
-
     const label = getLabel(item);
-    if (!confirm(`Delete folder "${label}" and all its contents?`)) return;
-
     const folderPath = buildPath(item);
-    try {
-      const result = await deleteFolder(`workflows/${folderPath}`, true);
-      try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder deleted", detail: label, life: 3000 }); } catch (_) {}
-      await refreshWorkflowSidebar();
-      if (result && result.trash) {
-        registerUndo(`Deleted ${label}`, async () => {
-          await restoreTrash(result.trash, folderPath);
+    showWfoConfirm({
+      title: "Delete folder?",
+      body: `Delete "<b>${label}</b>" and all its contents? This can be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const result = await deleteFolder(`workflows/${folderPath}`, true);
+          try { app.extensionManager?.toast?.add({ severity: "success", summary: "Folder deleted", detail: label, life: 3000 }); } catch (_) {}
           await refreshWorkflowSidebar();
-        });
-      }
-    } catch (err) {
-      try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
-    }
+          if (result && result.trash) {
+            registerUndo(`Deleted ${label}`, async () => {
+              await restoreTrash(result.trash, folderPath);
+              await refreshWorkflowSidebar();
+            });
+          }
+        } catch (err) {
+          try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
+        }
+      },
+    });
   });
 
   const duplicateFolder_ = document.createElement("div");
@@ -1360,9 +1456,9 @@ function showFolderContextMenu(e, item) {
 
   document.body.appendChild(menu);
   menu.appendChild(renameFolder);
-  menu.appendChild(setColor);
   menu.appendChild(duplicateFolder_);
   menu.appendChild(moveTo);
+  menu.appendChild(setColor);
   menu.appendChild(newFolderRoot);
   menu.appendChild(newSubFolder);
   menu.appendChild(deleteFolder_);
@@ -1690,6 +1786,15 @@ function injectStyles() {
     }
     .wfo-swatch:hover { transform: scale(1.15); }
     .wfo-swatch-active { border-color: var(--input-text, #fff); }
+    .wfo-swatch-rainbow {
+        background: var(--comfy-input-bg, #2a2a2a);
+        border-color: var(--border-color, #4e4e4e);
+        color: var(--input-text, #ccc);
+        font-size: 16px;
+        transform: scale(1.06);
+    }
+    .wfo-swatch-rainbow:hover { transform: scale(1.19); }
+    .wfo-swatch-rainbow .pi { line-height: 1; }
     .wfo-swatch-check {
         color: #fff;
         font-size: 11px;
@@ -1755,6 +1860,11 @@ function injectStyles() {
         background: var(--border-color, #6a6a6a);
         opacity: 1;
         margin: 10px -10px 8px;
+    }
+    .wfo-context-divider {
+        height: 1px;
+        background: var(--border-color, #4e4e4e);
+        margin: 0;
     }
     .wfo-checkbox {
         width: 16px;
@@ -1872,6 +1982,87 @@ function injectStyles() {
       box-sizing: border-box;
       font-family: var(--comfy-font-family, Inter, Arial, sans-serif);
     }
+    .wfo-dialog-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 9999999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .wfo-dialog {
+      background: var(--comfy-menu-bg, #1e1e1e);
+      border: 1px solid var(--border-color, #4e4e4e);
+      border-radius: 8px;
+      min-width: 320px;
+      max-width: 480px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      font-family: var(--comfy-font-family, Inter, Arial, sans-serif);
+      color: var(--input-text, #fff);
+    }
+    .wfo-dialog-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px 14px;
+      font-size: 16px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-color, #4e4e4e);
+    }
+    .wfo-dialog-x {
+      background: none;
+      border: none;
+      color: var(--descrip-text, #999);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 0;
+      line-height: 1;
+    }
+    .wfo-dialog-x:hover { color: var(--input-text, #fff); }
+    .wfo-dialog-body {
+      padding: 16px 20px;
+      font-size: 14px;
+      color: var(--input-text, #ccc);
+      line-height: 1.5;
+    }
+    .wfo-dialog-body ul { margin: 8px 0 0 16px; padding: 0; }
+    .wfo-dialog-body li { margin: 3px 0; font-size: 13px; color: var(--descrip-text, #999); }
+    .wfo-dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 4px 20px 16px;
+    }
+    .wfo-dialog-cancel {
+      background: transparent;
+      border: 1px solid var(--border-color, #4e4e4e);
+      color: var(--input-text, #fff);
+      padding: 8px 18px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+    }
+    .wfo-dialog-cancel:hover { background: var(--content-hover-bg, #333); }
+    .wfo-dialog-ok {
+      background: var(--p-primary-color, #4a8cff);
+      border: 1px solid var(--p-primary-color, #4a8cff);
+      color: #fff;
+      padding: 8px 18px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .wfo-dialog-ok:hover { filter: brightness(1.1); }
+    .wfo-dialog-danger {
+      background: #e53e3e;
+      border-color: #e53e3e;
+    }
+    .wfo-dialog-danger:hover { background: #c53030; border-color: #c53030; filter: none; }
   `;
   document.head.appendChild(style);
 }
@@ -1930,6 +2121,38 @@ function applyPlaceholderBadges(panel) {
     if (!badge) continue;
     badge.style.display = placeholderOnlyFolders.has(label) ? "none" : "";
   }
+}
+
+// Map of file rel-path → hex color
+let fileColors = {};
+async function loadFileColors() {
+  try {
+    const resp = await api.fetchApi("/wfo/file/colors");
+    if (resp.ok) fileColors = await resp.json();
+  } catch (_) {}
+}
+
+function applyFileColors(panel) {
+  panel.querySelectorAll("[role='treeitem']").forEach((el) => {
+    if (!el.classList.contains("p-tree-node-leaf")) return;
+    if (getLabel(el) === "placeholder") return;
+    const icon = el.querySelector(".pi-file, [class*='pi-file']");
+    if (!icon) return;
+    const color = fileColors[buildPath(el)];
+    icon.style.color = color || "";
+  });
+}
+
+async function setFileColor(fileRel, color) {
+  const resp = await api.fetchApi("/wfo/file/colors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: fileRel, color: color || "" }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  await loadFileColors();
+  const panel = findWorkflowsPanel();
+  if (panel) applyFileColors(panel);
 }
 
 // Map of folder rel-path → hex color
@@ -2025,6 +2248,7 @@ app.registerExtension({
         ensurePlaceholders();
         loadPlaceholderFolders().then(() => applyPlaceholderBadges(panel));
         loadFolderColors().then(() => applyFolderColors(panel));
+        loadFileColors().then(() => applyFileColors(panel));
         // Right-click on empty sidebar space → create a root folder.
         // Climb to the full-height sidebar container (same column width as the
         // tree) so empty space below the list is covered too.
@@ -2049,6 +2273,7 @@ app.registerExtension({
             attachDragHandlers(panel);
             applyPlaceholderBadges(panel);
             applyFolderColors(panel);
+            applyFileColors(panel);
             ensurePlaceholders();
             if (selectedPaths.size) applySelectionStyles(panel);
           } catch (err) {

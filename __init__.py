@@ -392,6 +392,45 @@ async def rename_wfo_folder(request):
         return web.Response(status=500, text=str(e))
 
 
+@PromptServer.instance.routes.get("/wfo/file/colors")
+async def get_file_colors(request):
+    try:
+        base = _get_user_base(request)
+        if not base:
+            return web.json_response({})
+        return web.json_response(_load_meta(base).get("file_colors", {}))
+    except Exception:
+        return web.json_response({})
+
+
+@PromptServer.instance.routes.post("/wfo/file/colors")
+async def set_file_color(request):
+    try:
+        data = await request.json()
+        rel = data.get("path", "").replace("\\", "/").strip("/")
+        color = (data.get("color") or "").strip()
+        if not rel or ".." in rel.split("/"):
+            return web.Response(status=400, text="Invalid path")
+        if color and not (color.startswith("#") and len(color) in (4, 7)):
+            return web.Response(status=400, text="Invalid color")
+
+        base = _get_user_base(request)
+        if not base:
+            return web.Response(status=404, text="Workflows directory not found")
+
+        meta = _load_meta(base)
+        file_colors = meta.get("file_colors", {})
+        if color:
+            file_colors[rel] = color
+        else:
+            file_colors.pop(rel, None)
+        meta["file_colors"] = file_colors
+        _save_meta(base, meta)
+        return web.Response(status=200)
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+
 @PromptServer.instance.routes.post("/wfo/file/copy")
 async def copy_wfo_file(request):
     try:
