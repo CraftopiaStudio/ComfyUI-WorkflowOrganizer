@@ -152,6 +152,9 @@ function getWorkflowStore() {
 
 async function refreshWorkflowSidebar() {
   await loadPlaceholderFolders();
+  // Reload color maps so the re-rendered tree reflects any moved/renamed keys
+  // without needing a full browser refresh.
+  try { await Promise.all([loadFolderColors(), loadFileColors()]); } catch (_) {}
   const store = getWorkflowStore();
   if (store) {
     const refreshMethods = ["syncWorkflows", "loadWorkflows", "refreshWorkflows"];
@@ -1048,12 +1051,19 @@ async function trashPath(rel) {
 // Registers a single undo for the whole batch. Returns how many actually moved.
 async function performFileMoves(filePaths, destRel) {
   const undos = [];
+  const colorRemaps = [];
   for (const rel of filePaths) {
     const fileName = rel.split("/").pop();
     const src = `workflows/${rel}.json`;
-    const dst = `workflows/${destRel ? destRel + "/" : ""}${fileName}.json`;
+    const newRel = `${destRel ? destRel + "/" : ""}${fileName}`;
+    const dst = `workflows/${newRel}.json`;
     if (src === dst) continue;
-    try { await moveUserDataFile(src, dst); undos.push([dst, src]); } catch (_) {}
+    try {
+      await moveUserDataFile(src, dst);
+      undos.push([dst, src]);
+      await remapFileColor(rel, newRel);
+      colorRemaps.push([rel, newRel]);
+    } catch (_) {}
   }
   if (destRel) { try { await deleteUserDataFile(`workflows/${destRel}/placeholder.json`); } catch (_) {} }
   await refreshWorkflowSidebar();
@@ -1061,6 +1071,7 @@ async function performFileMoves(filePaths, destRel) {
     const label = undos.length === 1 ? "workflow" : "workflows";
     registerUndo(`Moved ${undos.length} ${label}`, async () => {
       for (const [from, to] of undos) { try { await moveUserDataFile(from, to); } catch (_) {} }
+      for (const [oldRel, newRel] of colorRemaps) { await remapFileColor(newRel, oldRel); }
       await refreshWorkflowSidebar();
     });
   }
@@ -1161,13 +1172,18 @@ async function moveFileToFolder(item, destRel) {
   const src = sourcePath.startsWith(prefix) ? sourcePath : prefix + sourcePath;
   const dst = prefix + (destRel ? destRel + "/" : "") + fileName;
   if (src === dst) return;
+  const baseLabel = getLabel(item).replace(/\.json$/, "");
+  const oldColorRel = buildPath(item).replace(/\.json$/, "");
+  const newColorRel = (destRel ? destRel + "/" : "") + baseLabel;
   try {
     await moveUserDataFile(src, dst);
     if (destRel) await deleteUserDataFile(`workflows/${destRel}/placeholder.json`);
+    await remapFileColor(oldColorRel, newColorRel);
     try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow moved", detail: destRel || "Root", life: 3000 }); } catch (_) {}
     await refreshWorkflowSidebar();
     registerUndo(`Moved ${fileName.replace(/\.json$/, "")}`, async () => {
       await moveUserDataFile(dst, src);
+      await remapFileColor(newColorRel, oldColorRel);
       await refreshWorkflowSidebar();
     });
   } catch (err) {
@@ -2244,6 +2260,25 @@ async function setFileColor(fileRel, color) {
   await loadFileColors();
   const panel = findWorkflowsPanel();
   if (panel) applyFileColors(panel);
+}
+
+// Carry a workflow's color over when it moves (file colors are keyed by the
+// full relative path, so a move changes the key). Both rels are buildPath-style
+// (no ".json"). Best-effort: failures here never block the move.
+async function remapFileColor(oldRel, newRel) {
+  if (!oldRel || !newRel || oldRel === newRel) return;
+  const color = fileColors[oldRel];
+  if (!color) return;
+  const post = (path, c) => api.fetchApi("/wfo/file/colors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, color: c }),
+  });
+  try {
+    await post(newRel, color);
+    await post(oldRel, "");
+    await loadFileColors();
+  } catch (_) {}
 }
 
 // Map of folder rel-path → hex color

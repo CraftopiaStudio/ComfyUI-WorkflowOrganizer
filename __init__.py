@@ -116,8 +116,10 @@ def _remap_color_keys(base, old_rel, new_rel):
     if new_rel.startswith(prefix):
         new_rel = new_rel[len(prefix):]
     meta = _load_meta(base)
-    colors = meta.get("colors", {})
     changed = False
+
+    # Folder colors: the folder itself plus any nested subfolders.
+    colors = meta.get("colors", {})
     for key in list(colors.keys()):
         if key == old_rel:
             colors[new_rel] = colors.pop(key)
@@ -125,8 +127,17 @@ def _remap_color_keys(base, old_rel, new_rel):
         elif key.startswith(old_rel + "/"):
             colors[new_rel + key[len(old_rel):]] = colors.pop(key)
             changed = True
+
+    # File colors of every workflow that lived inside the moved/renamed folder.
+    file_colors = meta.get("file_colors", {})
+    for key in list(file_colors.keys()):
+        if key.startswith(old_rel + "/"):
+            file_colors[new_rel + key[len(old_rel):]] = file_colors.pop(key)
+            changed = True
+
     if changed:
         meta["colors"] = colors
+        meta["file_colors"] = file_colors
         _save_meta(base, meta)
 
 
