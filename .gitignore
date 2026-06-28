@@ -7,3 +7,7 @@ __pycache__/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Internal working files (not for the public repo)
+RECORDING_SCRIPT.md
+project-comfyui-workfloworganizer.md
