@@ -14,7 +14,7 @@ right-click menu — all without a single page refresh.
 
 ## ✨ Features
 
-- **Drag & drop** workflows *and* folders to reorganize — instantly, no reload
+- **Drag & drop** workflows *and* folders to reorganize , instantly, no reload
 - **Custom right-click menu** for files and folders: Rename, Duplicate,
   Move to…, Set Color, New Folder, Delete
 - **Color-coding** for both folders and workflow files, with filled folder icons
@@ -30,7 +30,7 @@ right-click menu — all without a single page refresh.
 ## 🎬 In action
 
 ### Drag & drop
-Drag workflows and whole folders (with their contents) anywhere — drop onto a
+Drag workflows and whole folders (with their contents) anywhere , drop onto a
 folder to nest, or onto the root bar to move out. The sidebar updates instantly.
 
 https://github.com/user-attachments/assets/71904d97-f604-4cd3-a4e7-3b67ed562bd4
