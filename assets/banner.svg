@@ -1,0 +1,53 @@
+<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ComfyUI Workflow Organizer">
+  <defs>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#ef4444"/>
+      <stop offset="14%" stop-color="#f97316"/>
+      <stop offset="28%" stop-color="#eab308"/>
+      <stop offset="42%" stop-color="#84cc16"/>
+      <stop offset="56%" stop-color="#16a34a"/>
+      <stop offset="68%" stop-color="#00f7ff"/>
+      <stop offset="80%" stop-color="#38bdf8"/>
+      <stop offset="90%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#ec4899"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e1e20"/>
+      <stop offset="100%" stop-color="#141415"/>
+    </linearGradient>
+  </defs>
+
+  <!-- card -->
+  <rect x="2" y="2" width="1196" height="316" rx="20" fill="url(#bg)" stroke="#3a3a3d" stroke-width="2"/>
+
+  <!-- decorative palette row -->
+  <g transform="translate(89,90)">
+    <circle cx="0"   cy="0" r="11" fill="#ef4444"/>
+    <circle cx="34"  cy="0" r="11" fill="#f97316"/>
+    <circle cx="68"  cy="0" r="11" fill="#eab308"/>
+    <circle cx="102" cy="0" r="11" fill="#84cc16"/>
+    <circle cx="136" cy="0" r="11" fill="#16a34a"/>
+    <circle cx="170" cy="0" r="11" fill="#00f7ff"/>
+    <circle cx="204" cy="0" r="11" fill="#38bdf8"/>
+    <circle cx="238" cy="0" r="11" fill="#a855f7"/>
+    <circle cx="272" cy="0" r="11" fill="#ec4899"/>
+  </g>
+
+  <!-- title -->
+  <text x="78" y="188" font-family="'Segoe UI', Inter, Helvetica, Arial, sans-serif"
+        font-size="69" font-weight="700" fill="#e6e6e9" letter-spacing="-0.75">
+    Workflow Organizer
+  </text>
+
+  <!-- tagline -->
+  <text x="82" y="238" font-family="'Segoe UI', Inter, Helvetica, Arial, sans-serif"
+        font-size="27" font-weight="500" fill="#c9c9cc">
+    Drag-and-drop file management for the ComfyUI sidebar
+  </text>
+
+  <!-- footer line -->
+  <text x="82" y="280" font-family="'Segoe UI', Inter, Helvetica, Arial, sans-serif"
+        font-size="18" font-weight="500" fill="#7c7c82" letter-spacing="2">
+    COLOR  ·  RENAME  ·  DUPLICATE  ·  MULTI-SELECT  ·  UNDO
+  </text>
+</svg>

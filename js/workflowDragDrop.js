@@ -150,30 +150,87 @@ function getWorkflowStore() {
   return null;
 }
 
-async function refreshWorkflowSidebar() {
-  await loadPlaceholderFolders();
-  // Reload color maps so the re-rendered tree reflects any moved/renamed keys
-  // without needing a full browser refresh.
-  try { await Promise.all([loadFolderColors(), loadFileColors()]); } catch (_) {}
+// Ask ComfyUI's workflow store to re-read the list from disk.
+async function syncWorkflowStore() {
   const store = getWorkflowStore();
   if (store) {
     const refreshMethods = ["syncWorkflows", "loadWorkflows", "refreshWorkflows"];
     for (const method of refreshMethods) {
       if (typeof store[method] === "function") {
-        try {
-          await store[method]();
-          return;
-        } catch (err) { console.warn(err); }
+        try { await store[method](); return true; }
+        catch (err) { console.warn(err); }
       }
     }
   }
+  return false;
+}
+
+// Force ComfyUI to re-mount the workflows sidebar tab (switch away and back).
+// This is the F5-equivalent that defeats a stale in-memory view: the store data
+// may be correct after a sync, but the rendered tree didn't react to it.
+async function rerenderWorkflowSidebar() {
   const allBtns = document.querySelectorAll(".sidebar-icon-wrapper");
   const workflowBtn = [...allBtns].find((b) => b.querySelector("[class*='comfy--workflow'], [title*='orkflow']"));
   const otherBtn = [...allBtns].find((b) => b !== workflowBtn);
   if (workflowBtn && otherBtn) {
     otherBtn.click();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 80));
     workflowBtn.click();
+    return true;
+  }
+  return false;
+}
+
+// Full workflow path as the store stores it: "workflows/<rel>.json".
+function storeWorkflowPath(rel) {
+  return `workflows/${rel.replace(/\.json$/, "")}.json`;
+}
+
+// Is a workflow with this store-path currently rendered in the tree? (Collapsed
+// folders hide their children, so this only answers for what should be visible.)
+function isWorkflowInDom(storePath) {
+  const panel = findWorkflowsPanel();
+  if (!panel) return true; // can't tell — assume yes, don't force a re-render
+  for (const el of panel.querySelectorAll("[role='treeitem']")) {
+    if (!el.classList.contains("p-tree-node-leaf")) continue;
+    if (storeWorkflowPath(buildPath(el)) === storePath) return true;
+  }
+  return false;
+}
+
+async function refreshWorkflowSidebar(expectedPath = null) {
+  await loadPlaceholderFolders();
+  // Reload color maps so the re-rendered tree reflects any moved/renamed keys
+  // without needing a full browser refresh.
+  try { await Promise.all([loadFolderColors(), loadFileColors()]); } catch (_) {}
+
+  // The store's reconciliation can run against a listing snapshot taken before
+  // our just-written file is on disk, or race with a stale internal sync that
+  // deletes the entry we added. Re-sync serially (never overlapping) until the
+  // expected path shows up in the store data.
+  const store = getWorkflowStore();
+  const inStore = () => {
+    if (!expectedPath) return true;
+    try { return !!store?.getWorkflowByPath?.(expectedPath); } catch (_) { return true; }
+  };
+  let usedStore = false;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    usedStore = await syncWorkflowStore();
+    if (!usedStore || !expectedPath || inStore()) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  // The store can hold a stale in-memory entry so the data looks correct while
+  // the rendered tree never updated (the "F5 fixes it" bug, worst when re-using
+  // names from earlier in the session). If the expected item is in the store but
+  // not in the DOM, force a re-mount of the tab — same effect as F5, no reload.
+  if (!usedStore) {
+    await rerenderWorkflowSidebar();
+  } else if (expectedPath) {
+    await new Promise((r) => requestAnimationFrame(r));
+    if (!isWorkflowInDom(expectedPath)) {
+      await rerenderWorkflowSidebar();
+    }
   }
 }
 
@@ -1313,7 +1370,7 @@ async function renameWorkflowFile(item) {
       });
       if (!resp.ok) throw new Error(await resp.text());
       try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow renamed", detail: `${oldLabel} → ${cleanName}`, life: 3000 }); } catch (_) {}
-      await refreshWorkflowSidebar();
+      await refreshWorkflowSidebar(storeWorkflowPath(newRel));
     } catch (err) {
       try { app.extensionManager?.toast?.add({ severity: "error", summary: "Error", detail: err.message, life: 5000 }); } catch (_) {}
     }
@@ -1369,8 +1426,10 @@ function showContextMenu(e, item) {
     removeContextMenu();
     try {
       const newName = await duplicateFile(rel);
+      const parent = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+      const newRel = parent ? `${parent}/${newName}` : newName;
       try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow duplicated", detail: newName.replace(/\.json$/, ""), life: 3000 }); } catch (_) {}
-      await refreshWorkflowSidebar();
+      await refreshWorkflowSidebar(storeWorkflowPath(newRel));
     } catch (err) {
       try { app.extensionManager?.toast?.add({ severity: "error", summary: "Duplicate failed", detail: err.message, life: 5000 }); } catch (_) {}
     }
