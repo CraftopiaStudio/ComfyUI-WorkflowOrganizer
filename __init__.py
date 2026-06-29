@@ -530,26 +530,6 @@ async def copy_wfo_folder(request):
         return web.Response(status=500, text=str(e))
 
 
-class WorkflowOrganizerInfo:
-    """Dummy node — exists only so ComfyUI loads the JS extension."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {}}
-
-    RETURN_TYPES = ()
-    FUNCTION = "noop"
-    CATEGORY = "CraftKit/utils"
-    OUTPUT_NODE = True
-
-    def noop(self):
-        return ()
-
-
-NODE_CLASS_MAPPINGS = {
-    "WorkflowOrganizerInfo": WorkflowOrganizerInfo,
-}
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "WorkflowOrganizerInfo": "Workflow Organizer Info 📂",
-}
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
