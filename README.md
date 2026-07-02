@@ -29,41 +29,41 @@ right-click menu — all without a single page refresh.
 
 ## 🎬 In action
 
-### Drag & drop
+### 1. Drag & drop
 Drag workflows and whole folders (with their contents) anywhere , drop onto a
 folder to nest, or onto the root bar to move out. The sidebar updates instantly.
 
 https://github.com/user-attachments/assets/71904d97-f604-4cd3-a4e7-3b67ed562bd4
 
-### Multi-select + bulk actions
-**Ctrl + click** to pick individual workflows, **Shift + click** to select a
-range. Then move or delete the whole selection at once (with undo).
-
-https://github.com/user-attachments/assets/ba43ccbf-c974-4b31-b51e-4d377b290993
-
-### Workflow menu
-Right-click any workflow for Rename, Duplicate, Move to…, Set Color, New Folder
-and Delete — all acting on the file itself, with undo on delete.
-
-https://github.com/user-attachments/assets/d556ed72-c72b-482e-b059-6a0155b4c8db
-
-### Folder menu
+### 2. Folder menu
 The same clean menu for folders: Rename, Duplicate, Move to…, Set Color,
 New Folder, New Sub Folder, and Delete (with undo).
 
 https://github.com/user-attachments/assets/accbc381-6177-4eb6-bb19-c1d46d5be121
 
-### Folder colors
+### 3. Folder colors
 Color folders from a palette of presets or a custom gradient/hex picker. Toggle
 filled folder icons, or apply one color to every folder at once.
 
 https://github.com/user-attachments/assets/23e6c8aa-037a-4c40-a436-7bedb64b3783
 
-### File colors
+### 4. File colors
 Color individual workflow icons with the same picker. Colors are saved and even
 follow a workflow when you move or rename it.
 
 https://github.com/user-attachments/assets/5ebb165d-6d81-425f-8442-8bd3ce45fc4a
+
+### 5. Multi-select + bulk actions
+**Ctrl + click** to pick individual workflows, **Shift + click** to select a
+range. Then move or delete the whole selection at once (with undo).
+
+https://github.com/user-attachments/assets/ba43ccbf-c974-4b31-b51e-4d377b290993
+
+### 6. Workflow menu
+Right-click any workflow for Rename, Duplicate, Move to…, Set Color, New Folder
+and Delete — all acting on the file itself, with undo on delete.
+
+https://github.com/user-attachments/assets/d556ed72-c72b-482e-b059-6a0155b4c8db
 
 ---
 
