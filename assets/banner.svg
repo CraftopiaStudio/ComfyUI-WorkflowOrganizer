@@ -1,42 +1,94 @@
-<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ComfyUI Workflow Organizer">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1198 318">
+  <!-- Generator: Adobe Illustrator 30.6.0, SVG Export Plug-In . SVG Version: 2.1.4 Build 109)  -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1e1e20"/>
-      <stop offset="100%" stop-color="#141415"/>
+    <style>
+      .st0 {
+        fill: #7c7c82;
+        font-size: 18px;
+        letter-spacing: .11em;
+      }
+
+      .st0, .st1, .st2 {
+        isolation: isolate;
+      }
+
+      .st0, .st2 {
+        font-family: Inter-Medium, Inter;
+        font-weight: 500;
+      }
+
+      .st1 {
+        fill: #e6e6e9;
+        font-family: SegoeUI-Bold, 'Segoe UI';
+        font-size: 69px;
+        font-weight: 700;
+        letter-spacing: 0em;
+      }
+
+      .st3 {
+        fill: #a855f7;
+      }
+
+      .st4 {
+        fill: #38bdf8;
+      }
+
+      .st5 {
+        fill: #eab308;
+      }
+
+      .st6 {
+        fill: #f97316;
+      }
+
+      .st7 {
+        fill: #00f7ff;
+      }
+
+      .st8 {
+        fill: #16a34a;
+      }
+
+      .st9 {
+        fill: url(#linear-gradient);
+        stroke: #3a3a3d;
+        stroke-width: 2px;
+      }
+
+      .st10 {
+        fill: #84cc16;
+      }
+
+      .st11 {
+        fill: #ec4899;
+      }
+
+      .st12 {
+        fill: #e5484d;
+      }
+
+      .st2 {
+        fill: #c9c9cc;
+        font-size: 27px;
+      }
+    </style>
+    <linearGradient id="linear-gradient" x1="293.25" y1="555.26" x2="293.25" y2="554.26" gradientTransform="translate(-350133 175462) scale(1196 -316)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1e1e20"/>
+      <stop offset="1" stop-color="#141415"/>
     </linearGradient>
   </defs>
-
-  <!-- card -->
-  <rect x="2" y="2" width="1196" height="316" rx="20" fill="url(#bg)" stroke="#3a3a3d" stroke-width="2"/>
-
-  <!-- decorative palette row -->
-  <g transform="translate(89,90)">
-    <circle cx="0"   cy="0" r="11" fill="#ef4444"/>
-    <circle cx="34"  cy="0" r="11" fill="#f97316"/>
-    <circle cx="68"  cy="0" r="11" fill="#eab308"/>
-    <circle cx="102" cy="0" r="11" fill="#84cc16"/>
-    <circle cx="136" cy="0" r="11" fill="#16a34a"/>
-    <circle cx="170" cy="0" r="11" fill="#00f7ff"/>
-    <circle cx="204" cy="0" r="11" fill="#38bdf8"/>
-    <circle cx="238" cy="0" r="11" fill="#a855f7"/>
-    <circle cx="272" cy="0" r="11" fill="#ec4899"/>
-  </g>
-
-  <!-- title -->
-  <text x="78" y="188" font-family="'Segoe UI', Inter, Helvetica, Arial, sans-serif"
-        font-size="69" font-weight="700" fill="#e6e6e9" letter-spacing="-0.75">
-    Workflow Organizer
-  </text>
-
-  <!-- tagline -->
-  <text x="82" y="238" font-family="'Segoe UI', Inter, Helvetica, Arial, sans-serif"
-        font-size="27" font-weight="500" fill="#c9c9cc">
-    Drag-and-drop file management for the ComfyUI sidebar
-  </text>
-
-  <!-- footer line -->
-  <text x="82" y="280" font-family="'Segoe UI', Inter, Helvetica, Arial, sans-serif"
-        font-size="18" font-weight="500" fill="#7c7c82" letter-spacing="2">
-    COLOR  ·  RENAME  ·  DUPLICATE  ·  MULTI-SELECT  ·  UNDO
-  </text>
+  <rect class="st9" x="1" y="1" width="1196" height="316" rx="20" ry="20"/>
+  <text class="st1" transform="translate(77 187)"><tspan x="0" y="0">Workflow Organizer</tspan></text>
+  <text class="st2" transform="translate(81 237)"><tspan x="0" y="0">Drag-and-drop file management for the ComfyUI sidebar</tspan></text>
+  <text class="st0" transform="translate(81 279)"><tspan x="0" y="0">COLOR · RENAME · DUPLICATE · MULTI-SELECT · UNDO</tspan></text>
+  <path class="st12" d="M85.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st6" d="M119.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st10" d="M187.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st8" d="M221.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st7" d="M255.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st4" d="M289.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st3" d="M323.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st11" d="M357.28,77.81h-8.17c-1.5,0-2.72,1.23-2.72,2.72v16.34c0,1.5,1.23,2.72,2.72,2.72h21.78c1.5,0,2.72-1.23,2.72-2.72v-13.62c0-1.5-1.23-2.72-2.72-2.72h-10.89l-2.72-2.72Z"/>
+  <path class="st5" d="M169.48,98c-.55.95-1.57,1.53-2.67,1.53h-22.01c-.89,0-1.45-.97-1-1.74l3.5-5.99c.56-.96,1.6-1.55,2.72-1.53h22.01c.89,0,1.45.97,1,1.74l-3.54,5.99ZM150.01,88.72h16.81c.62,0,1.12-.5,1.12-1.12,0-1.75,0-5.03,0-5.65,0-.86-.84-1.6-1.85-1.57h-10.6v-.06l-1.95-2.45c-.07-.08-.17-.13-.28-.13h-7.97c-1.48,0-2.67,1.2-2.67,2.67v15.31c0,.36.48.49.66.18l2.67-4.58c.84-1.43,2.36-2.6,4.05-2.6Z"/>
 </svg>
