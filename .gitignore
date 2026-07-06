@@ -11,6 +11,7 @@ Thumbs.db
 # Internal working files (not for the public repo)
 RECORDING_SCRIPT.md
 project-comfyui-workfloworganizer.md
+CODE_REVIEW_v1.0.0.md
 
 # Local design source files
 assets/*.ai

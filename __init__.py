@@ -8,6 +8,7 @@ from aiohttp import web
 import folder_paths
 import json
 import os
+import re
 import shutil
 import time
 
@@ -98,11 +99,53 @@ def _load_meta(base):
 
 
 def _save_meta(base, data):
+    """Write .wfo_meta.json atomically: write to a temp file, then rename over
+    the real file. os.replace is atomic on both Windows and POSIX, so a crash
+    or power loss mid-write can never leave a corrupted/truncated meta file
+    (the old file stays intact until the new one is fully written)."""
+    target = _meta_file(base)
+    tmp = target + ".tmp"
     try:
-        with open(_meta_file(base), "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
+        os.replace(tmp, target)
     except Exception:
-        pass
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+
+HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _valid_color(color):
+    return bool(HEX_COLOR_RE.match(color))
+
+
+# Windows-reserved device names (case-insensitive) that can't be used as a
+# file/folder name, even with an extension (e.g. "CON.json" is also invalid).
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _valid_name(name):
+    """Reject names that are invalid on Windows (and generally unsafe):
+    reserved device names, forbidden characters, and trailing dot/space
+    (Windows silently strips these, which can cause confusing mismatches)."""
+    if not name or name in (".", ".."):
+        return False
+    if any(ch in name for ch in '<>:"/\\|?*'):
+        return False
+    if name[-1] in (" ", "."):
+        return False
+    stem = name.split(".")[0].upper()
+    if stem in _WINDOWS_RESERVED_NAMES:
+        return False
+    return True
 
 
 def _remap_color_keys(base, old_rel, new_rel):
@@ -168,6 +211,8 @@ async def create_wfo_folder(request):
         rel = data.get("path", "").replace("\\", "/").strip("/")
         if not rel or ".." in rel.split("/"):
             return web.Response(status=400, text="Invalid path")
+        if not _valid_name(rel.split("/")[-1]):
+            return web.Response(status=400, text="Invalid folder name")
 
         base = _get_user_base(request)
         if not base:
@@ -311,8 +356,7 @@ async def set_color(request):
         color = (data.get("color") or "").strip()
         if not rel or ".." in rel.split("/"):
             return web.Response(status=400, text="Invalid path")
-        # basic hex validation when setting
-        if color and not (color.startswith("#") and len(color) in (4, 7)):
+        if color and not _valid_color(color):
             return web.Response(status=400, text="Invalid color")
 
         base = _get_user_base(request)
@@ -347,7 +391,7 @@ async def set_colors_bulk(request):
             color = (color or "").strip()
             if not rel or ".." in rel.split("/"):
                 continue
-            if color and not (color.startswith("#") and len(color) in (4, 7)):
+            if color and not _valid_color(color):
                 continue
             if color:
                 clean[rel] = color
@@ -402,6 +446,8 @@ async def rename_wfo_folder(request):
         new_rel = data.get("new", "").replace("\\", "/").strip("/")
         if not old_rel or not new_rel or ".." in old_rel.split("/") or ".." in new_rel.split("/"):
             return web.Response(status=400, text="Invalid path")
+        if not _valid_name(new_rel.split("/")[-1]):
+            return web.Response(status=400, text="Invalid name")
 
         base = _get_user_base(request)
         if not base:
@@ -446,7 +492,7 @@ async def set_file_color(request):
         color = (data.get("color") or "").strip()
         if not rel or ".." in rel.split("/"):
             return web.Response(status=400, text="Invalid path")
-        if color and not (color.startswith("#") and len(color) in (4, 7)):
+        if color and not _valid_color(color):
             return web.Response(status=400, text="Invalid color")
 
         base = _get_user_base(request)

@@ -640,6 +640,7 @@ function makeNewFolderItem(menu, parentRel, label = "New Folder", icon = "pi-fol
     transformMenuToInput(menu, "", async (folderName) => {
       const name = folderName.replace(/[/\\]/g, "");
       if (!name) return;
+      if (!isValidName(name)) { rejectInvalidName(name); return; }
       const rel = parentRel ? `${parentRel}/${name}` : name;
       try {
         await createFolder(`workflows/${rel}`);
@@ -1014,6 +1015,16 @@ function transformMenuToColorPicker(menu, currentColor, onPick, { showFolderOpti
   applyMenuMetrics(menu, nativeMenuMetrics);
 }
 
+// Escape user-controlled text (file/folder names) before interpolating it into
+// innerHTML — dialog bodies build markup around names, so a name containing
+// "&", "<", etc. must not corrupt (or, on non-Windows filesystems, inject into)
+// that markup.
+function esc(s) {
+  const div = document.createElement("div");
+  div.textContent = String(s);
+  return div.innerHTML;
+}
+
 // ── Confirm dialog (styled, matches ComfyUI dark theme) ──────────────────
 function showWfoConfirm({ title, body, onConfirm, confirmLabel = "Confirm", danger = false }) {
   const overlay = document.createElement("div");
@@ -1199,7 +1210,7 @@ function updateSelectionBar(container) {
     selectionBar.querySelector(".wfo-sel-move").addEventListener("click", () => showBulkMovePicker(container));
     selectionBar.querySelector(".wfo-sel-del").addEventListener("click", () => {
       const n = selectedPaths.size;
-      const list = [...selectedPaths].map(p => `<li>${p.split("/").pop()}</li>`).join("");
+      const list = [...selectedPaths].map(p => `<li>${esc(p.split("/").pop())}</li>`).join("");
       showWfoConfirm({
         title: `Delete ${n} workflow${n === 1 ? "" : "s"}?`,
         body: `Are you sure you want to delete these workflows?<ul>${list}</ul>`,
@@ -1352,12 +1363,36 @@ function removeContextMenu() {
   document.body.classList.remove("wfo-menu-open");
 }
 
+// Windows-reserved device names — can't be used as a file/folder name even
+// with an extension (e.g. "CON.json" is also invalid). Mirrors the server-side
+// check in __init__.py so the user gets an immediate, friendly toast instead
+// of a raw OS error surfacing from the rename call.
+const WFO_RESERVED_NAMES = new Set([
+  "CON", "PRN", "AUX", "NUL",
+  ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`),
+]);
+
+function isValidName(name) {
+  if (!name || name === "." || name === "..") return false;
+  if (/[<>:"/\\|?*]/.test(name)) return false;
+  if (/[ .]$/.test(name)) return false;
+  const stem = name.split(".")[0].toUpperCase();
+  if (WFO_RESERVED_NAMES.has(stem)) return false;
+  return true;
+}
+
+function rejectInvalidName(name) {
+  try { app.extensionManager?.toast?.add({ severity: "error", summary: "Invalid name", detail: `"${name}" is not a valid file or folder name.`, life: 5000 }); } catch (_) {}
+}
+
 // Rename a single workflow file on disk via the rename endpoint.
 async function renameWorkflowFile(item) {
   const oldLabel = getLabel(item);
   inlineRenameInTree(item, async (newName) => {
     const cleanName = newName.replace(/[/\\]/g, "");
     if (!cleanName || cleanName === oldLabel) return;
+    if (!isValidName(cleanName)) { rejectInvalidName(cleanName); return; }
     const oldRel = buildPath(item);
     const parts = oldRel.split("/");
     parts[parts.length - 1] = cleanName;
@@ -1456,7 +1491,7 @@ function showContextMenu(e, item) {
     removeContextMenu();
     if (multi) {
       const n = selectedPaths.size;
-      const list = [...selectedPaths].map(p => `<li>${p.split("/").pop()}</li>`).join("");
+      const list = [...selectedPaths].map(p => `<li>${esc(p.split("/").pop())}</li>`).join("");
       showWfoConfirm({
         title: `Delete ${n} workflows?`,
         body: `Are you sure you want to delete these workflows?<ul>${list}</ul>`,
@@ -1467,7 +1502,7 @@ function showContextMenu(e, item) {
     } else {
       showWfoConfirm({
         title: "Delete workflow?",
-        body: `Delete "<b>${getLabel(item)}</b>"? This can be undone.`,
+        body: `Delete "<b>${esc(getLabel(item))}</b>"? This can be undone.`,
         confirmLabel: "Delete",
         danger: true,
         onConfirm: () => deleteWorkflowFile(item),
@@ -1515,6 +1550,7 @@ function showFolderContextMenu(e, item) {
     inlineRenameInTree(item, async (newName) => {
       const cleanName = newName.replace(/[/\\]/g, "");
       if (!cleanName || cleanName === oldLabel) return;
+      if (!isValidName(cleanName)) { rejectInvalidName(cleanName); return; }
       const oldFolderPath = buildPath(item);
       const parts = oldFolderPath.split("/");
       parts[parts.length - 1] = cleanName;
@@ -1577,7 +1613,7 @@ function showFolderContextMenu(e, item) {
     const folderPath = buildPath(item);
     showWfoConfirm({
       title: "Delete folder?",
-      body: `Delete "<b>${label}</b>" and all its contents? This can be undone.`,
+      body: `Delete "<b>${esc(label)}</b>" and all its contents? This can be undone.`,
       confirmLabel: "Delete",
       danger: true,
       onConfirm: async () => {
