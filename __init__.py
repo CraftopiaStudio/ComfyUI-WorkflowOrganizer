@@ -5,12 +5,14 @@ Adds drag-and-drop support to the Workflows sidebar.
 
 from server import PromptServer
 from aiohttp import web
+import asyncio
 import folder_paths
 import json
 import os
 import re
 import shutil
 import time
+import uuid
 
 WEB_DIRECTORY = "./js"
 
@@ -23,18 +25,44 @@ def _trash_dir(base):
     return os.path.join(base, TRASH_DIRNAME)
 
 
+def _trash_token(name):
+    """Build a trash token: "<deleted_at_ms>_<uuid8>_<original name>".
+
+    The uuid segment prevents collisions when two same-named items are trashed
+    within the same millisecond (easily happens during a bulk delete) — a
+    colliding token would otherwise make shutil.move overwrite/nest the first
+    entry. _prune_trash only reads the leading "<ms>_" segment, so this is
+    backward compatible with existing trash entries.
+    """
+    return "%d_%s_%s" % (int(time.time() * 1000), uuid.uuid4().hex[:8], name)
+
+
 def _prune_trash(trash):
-    """Remove trash entries older than TRASH_MAX_AGE_DAYS."""
+    """Remove trash entries older than TRASH_MAX_AGE_DAYS.
+
+    Age is derived from the deletion timestamp encoded in the token itself
+    (the token's leading "<ms>_" prefix set when it was trashed), never from
+    the entry's mtime — mtime is inherited from the last content edit (shutil.move
+    preserves it), so a folder last touched weeks ago but only just deleted
+    would otherwise be purged within seconds of landing in the trash.
+    """
     if not os.path.isdir(trash):
         return
     cutoff = time.time() - TRASH_MAX_AGE_DAYS * 86400
     for name in os.listdir(trash):
         p = os.path.join(trash, name)
         try:
-            if os.path.getmtime(p) < cutoff:
-                shutil.rmtree(p, ignore_errors=True)
-        except Exception:
-            pass
+            deleted_at = int(name.split("_", 1)[0]) / 1000
+        except (ValueError, IndexError):
+            continue  # token doesn't parse; leave it alone rather than guess
+        if deleted_at < cutoff:
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+                else:
+                    shutil.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def _user_root():
@@ -50,20 +78,24 @@ def _get_user_base(request=None):
 
     Multi-user aware: when a request is given, ask ComfyUI's own UserManager
     which user it belongs to (the same mechanism the native userdata endpoints
-    use). Falls back to the first user dir that has a workflows folder, which is
-    correct for the common single-user ('default') setup.
+    use), and only ever operate on that user's directory — a failure to resolve
+    it is fatal (returns None -> 404), never a silent fallback to some other
+    user's folder. The scan-for-first-user fallback is reserved for internal
+    callers with no request (there is no "wrong user" to protect against then).
     """
     user_root = _user_root()
 
     if request is not None:
         try:
             user_id = PromptServer.instance.user_manager.get_request_user_id(request)
-            if user_id:
-                cand = os.path.join(user_root, user_id)
-                if os.path.isdir(cand):
-                    return cand
         except Exception:
-            pass
+            return None
+        if not user_id:
+            return None
+        cand = os.path.join(user_root, user_id)
+        if not os.path.isdir(cand):
+            return None
+        return cand
 
     if not os.path.isdir(user_root):
         return None
@@ -98,6 +130,14 @@ def _load_meta(base):
     return {}
 
 
+# Guards every .wfo_meta.json read-modify-write sequence. _save_meta's atomic
+# rename makes a single write safe, but without this two concurrent requests
+# (e.g. two browser tabs coloring different folders at once) can both read the
+# same "before" state and the second write silently discards the first's
+# change. Single aiohttp process/event loop, so one lock is enough.
+_meta_lock = asyncio.Lock()
+
+
 def _save_meta(base, data):
     """Write .wfo_meta.json atomically: write to a temp file, then rename over
     the real file. os.replace is atomic on both Windows and POSIX, so a crash
@@ -114,6 +154,31 @@ def _save_meta(base, data):
             os.remove(tmp)
         except Exception:
             pass
+
+
+def _in_workflows(rel):
+    """True if rel is "workflows" or starts with "workflows/".
+
+    All filesystem-touching endpoints are anchored at the user's root dir
+    (not the workflows dir) so that _resolve_safe's realpath check still
+    catches "..", but that means a path like "comfy.settings.json" or
+    ".wfo_meta.json" would otherwise resolve just fine too. This confines
+    every such endpoint to the workflows subtree the client actually means.
+    """
+    return rel == "workflows" or rel.startswith("workflows/")
+
+
+def _require_json_content_type(request):
+    """Reject requests whose Content-Type isn't application/json.
+
+    aiohttp's request.json() parses the body regardless of Content-Type, so
+    without this a cross-origin page can POST a "simple request" (no CORS
+    preflight, no Origin check) straight at these mutating endpoints. Requiring
+    application/json forces the browser to preflight, which blocks the
+    cross-origin call before it ever reaches us.
+    """
+    ctype = request.headers.get("Content-Type", "")
+    return ctype.split(";")[0].strip().lower() == "application/json"
 
 
 HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
@@ -207,9 +272,11 @@ def _remap_file_color_key(base, old_rel, new_rel):
 @PromptServer.instance.routes.post("/wfo/folder")
 async def create_wfo_folder(request):
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         rel = data.get("path", "").replace("\\", "/").strip("/")
-        if not rel or ".." in rel.split("/"):
+        if not rel or ".." in rel.split("/") or not _in_workflows(rel):
             return web.Response(status=400, text="Invalid path")
         if not _valid_name(rel.split("/")[-1]):
             return web.Response(status=400, text="Invalid folder name")
@@ -236,10 +303,12 @@ async def create_wfo_folder(request):
 @PromptServer.instance.routes.delete("/wfo/folder")
 async def delete_wfo_folder(request):
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         rel = data.get("path", "").replace("\\", "/").strip("/")
         recursive = data.get("recursive", False)
-        if not rel or ".." in rel.split("/"):
+        if not rel or ".." in rel.split("/") or not _in_workflows(rel):
             return web.Response(status=400, text="Invalid path")
 
         base = _get_user_base(request)
@@ -255,7 +324,7 @@ async def delete_wfo_folder(request):
             trash = _trash_dir(base)
             os.makedirs(trash, exist_ok=True)
             _prune_trash(trash)
-            token = "%d_%s" % (int(time.time() * 1000), os.path.basename(target))
+            token = _trash_token(os.path.basename(target))
             shutil.move(target, os.path.join(trash, token))
             return web.json_response({"trash": token})
 
@@ -278,9 +347,11 @@ async def trash_path(request):
     """Move a file or folder to the hidden trash; return its trash token.
     Works for single workflows (used by bulk delete) and folders alike."""
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         rel = data.get("path", "").replace("\\", "/").strip("/")
-        if not rel or ".." in rel.split("/"):
+        if not rel or ".." in rel.split("/") or not _in_workflows(rel):
             return web.Response(status=400, text="Invalid path")
 
         base = _get_user_base(request)
@@ -294,7 +365,7 @@ async def trash_path(request):
         trash = _trash_dir(base)
         os.makedirs(trash, exist_ok=True)
         _prune_trash(trash)
-        token = "%d_%s" % (int(time.time() * 1000), os.path.basename(target))
+        token = _trash_token(os.path.basename(target))
         shutil.move(target, os.path.join(trash, token))
         return web.json_response({"trash": token})
     except Exception as e:
@@ -305,13 +376,15 @@ async def trash_path(request):
 async def restore_trash(request):
     """Move a trashed file or folder back to its original location (undo delete)."""
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         token = data.get("trash", "")
         dest_rel = data.get("dest", "").replace("\\", "/").strip("/")
         # token must be a single path segment (no traversal)
         if not token or "/" in token or "\\" in token or ".." in token:
             return web.Response(status=400, text="Invalid trash token")
-        if not dest_rel or ".." in dest_rel.split("/"):
+        if not dest_rel or ".." in dest_rel.split("/") or not _in_workflows(dest_rel):
             return web.Response(status=400, text="Invalid path")
 
         base = _get_user_base(request)
@@ -351,6 +424,8 @@ async def get_colors(request):
 async def set_color(request):
     """Set (or clear, when color is empty) a folder's color."""
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         rel = data.get("path", "").replace("\\", "/").strip("/")
         color = (data.get("color") or "").strip()
@@ -363,14 +438,15 @@ async def set_color(request):
         if not base:
             return web.Response(status=404, text="Workflows directory not found")
 
-        meta = _load_meta(base)
-        colors = meta.get("colors", {})
-        if color:
-            colors[rel] = color
-        else:
-            colors.pop(rel, None)
-        meta["colors"] = colors
-        _save_meta(base, meta)
+        async with _meta_lock:
+            meta = _load_meta(base)
+            colors = meta.get("colors", {})
+            if color:
+                colors[rel] = color
+            else:
+                colors.pop(rel, None)
+            meta["colors"] = colors
+            _save_meta(base, meta)
         return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))
@@ -380,6 +456,8 @@ async def set_color(request):
 async def set_colors_bulk(request):
     """Replace the entire folder->color map (used by 'Apply to all' + its undo)."""
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         incoming = data.get("colors", {})
         if not isinstance(incoming, dict):
@@ -400,9 +478,10 @@ async def set_colors_bulk(request):
         if not base:
             return web.Response(status=404, text="Workflows directory not found")
 
-        meta = _load_meta(base)
-        meta["colors"] = clean
-        _save_meta(base, meta)
+        async with _meta_lock:
+            meta = _load_meta(base)
+            meta["colors"] = clean
+            _save_meta(base, meta)
         return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))
@@ -441,10 +520,13 @@ async def ensure_placeholders(request):
 @PromptServer.instance.routes.post("/wfo/folder/rename")
 async def rename_wfo_folder(request):
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         old_rel = data.get("old", "").replace("\\", "/").strip("/")
         new_rel = data.get("new", "").replace("\\", "/").strip("/")
-        if not old_rel or not new_rel or ".." in old_rel.split("/") or ".." in new_rel.split("/"):
+        if (not old_rel or not new_rel or ".." in old_rel.split("/") or ".." in new_rel.split("/")
+                or not _in_workflows(old_rel) or not _in_workflows(new_rel)):
             return web.Response(status=400, text="Invalid path")
         if not _valid_name(new_rel.split("/")[-1]):
             return web.Response(status=400, text="Invalid name")
@@ -464,10 +546,11 @@ async def rename_wfo_folder(request):
 
         was_dir = os.path.isdir(src)
         os.rename(src, dst)
-        if was_dir:
-            _remap_color_keys(base, old_rel, new_rel)
-        else:
-            _remap_file_color_key(base, old_rel, new_rel)
+        async with _meta_lock:
+            if was_dir:
+                _remap_color_keys(base, old_rel, new_rel)
+            else:
+                _remap_file_color_key(base, old_rel, new_rel)
         return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))
@@ -487,6 +570,8 @@ async def get_file_colors(request):
 @PromptServer.instance.routes.post("/wfo/file/colors")
 async def set_file_color(request):
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         rel = data.get("path", "").replace("\\", "/").strip("/")
         color = (data.get("color") or "").strip()
@@ -499,14 +584,15 @@ async def set_file_color(request):
         if not base:
             return web.Response(status=404, text="Workflows directory not found")
 
-        meta = _load_meta(base)
-        file_colors = meta.get("file_colors", {})
-        if color:
-            file_colors[rel] = color
-        else:
-            file_colors.pop(rel, None)
-        meta["file_colors"] = file_colors
-        _save_meta(base, meta)
+        async with _meta_lock:
+            meta = _load_meta(base)
+            file_colors = meta.get("file_colors", {})
+            if color:
+                file_colors[rel] = color
+            else:
+                file_colors.pop(rel, None)
+            meta["file_colors"] = file_colors
+            _save_meta(base, meta)
         return web.Response(status=200)
     except Exception as e:
         return web.Response(status=500, text=str(e))
@@ -515,9 +601,11 @@ async def set_file_color(request):
 @PromptServer.instance.routes.post("/wfo/file/copy")
 async def copy_wfo_file(request):
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         rel = data.get("path", "").replace("\\", "/").strip("/")
-        if not rel or ".." in rel.split("/"):
+        if not rel or ".." in rel.split("/") or not _in_workflows(rel):
             return web.Response(status=400, text="Invalid path")
 
         base = _get_user_base(request)
@@ -547,9 +635,11 @@ async def copy_wfo_file(request):
 @PromptServer.instance.routes.post("/wfo/folder/copy")
 async def copy_wfo_folder(request):
     try:
+        if not _require_json_content_type(request):
+            return web.Response(status=400, text="Content-Type must be application/json")
         data = await request.json()
         rel = data.get("path", "").replace("\\", "/").strip("/")
-        if not rel or ".." in rel.split("/"):
+        if not rel or ".." in rel.split("/") or not _in_workflows(rel):
             return web.Response(status=400, text="Invalid path")
 
         base = _get_user_base(request)

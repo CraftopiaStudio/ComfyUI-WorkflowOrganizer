@@ -11,11 +11,14 @@ const EXTENSION_NAME = "Craftopia.WorkflowOrganizer";
 
 async function moveUserDataFile(source, destination) {
   const resp = await api.fetchApi(
-    `/userdata/${encodeURIComponent(source)}/move/${encodeURIComponent(destination)}`,
+    `/userdata/${encodeURIComponent(source)}/move/${encodeURIComponent(destination)}?overwrite=false`,
     { method: "POST" }
   );
   if (!resp.ok) {
     const text = await resp.text();
+    if (resp.status === 409) {
+      throw new Error(`"${destination.split("/").pop()}" already exists at the destination`);
+    }
     throw new Error(`Move failed (${resp.status}): ${text}`);
   }
   return resp;
@@ -704,7 +707,7 @@ async function transformMenuToFolderList(menu, { isExcluded, currentRel, onPick 
     row.title = isCurrent ? `${entry.rel || "Root"} (current)` : (entry.rel || "Root");
     row.innerHTML =
       `<span class="pi ${entry.icon} wfo-icon" style="margin-left:${entry.depth * 12}px"></span>` +
-      `<span class="wfo-label">${entry.name}</span>` +
+      `<span class="wfo-label">${esc(entry.name)}</span>` +
       (isCurrent ? `<span class="wfo-current-tag">current</span>` : "");
     if (isCurrent) {
       row.style.opacity = "0.45";
@@ -1120,6 +1123,7 @@ async function trashPath(rel) {
 async function performFileMoves(filePaths, destRel) {
   const undos = [];
   const colorRemaps = [];
+  const skipped = [];
   for (const rel of filePaths) {
     const fileName = rel.split("/").pop();
     const src = `workflows/${rel}.json`;
@@ -1131,17 +1135,29 @@ async function performFileMoves(filePaths, destRel) {
       undos.push([dst, src]);
       await remapFileColor(rel, newRel);
       colorRemaps.push([rel, newRel]);
-    } catch (_) {}
+    } catch (_) { skipped.push(fileName); }
   }
   if (destRel) { try { await deleteUserDataFile(`workflows/${destRel}/placeholder.json`); } catch (_) {} }
   await refreshWorkflowSidebar();
   if (undos.length) {
     const label = undos.length === 1 ? "workflow" : "workflows";
     registerUndo(`Moved ${undos.length} ${label}`, async () => {
-      for (const [from, to] of undos) { try { await moveUserDataFile(from, to); } catch (_) {} }
+      let failed = 0;
+      for (const [from, to] of undos) { try { await moveUserDataFile(from, to); } catch (_) { failed++; } }
       for (const [oldRel, newRel] of colorRemaps) { await remapFileColor(newRel, oldRel); }
       await refreshWorkflowSidebar();
+      if (failed > 0) throw new Error(`${failed} of ${undos.length} could not be restored`);
     });
+  }
+  if (skipped.length) {
+    try {
+      app.extensionManager?.toast?.add({
+        severity: "warn",
+        summary: `${skipped.length} workflow${skipped.length === 1 ? "" : "s"} not moved`,
+        detail: `Already exists at destination: ${skipped.join(", ")}`,
+        life: 6000,
+      });
+    } catch (_) {}
   }
   return undos.length;
 }
@@ -1164,8 +1180,10 @@ async function bulkDeleteSelection(container) {
   try { app.extensionManager?.toast?.add({ severity: "success", summary: `Deleted ${undos.length} workflows`, life: 3000 }); } catch (_) {}
   if (undos.length) {
     registerUndo(`Deleted ${undos.length} workflows`, async () => {
-      for (const [token, destRel] of undos) { try { await restoreTrash(token, destRel); } catch (_) {} }
+      let failed = 0;
+      for (const [token, destRel] of undos) { try { await restoreTrash(token, destRel); } catch (_) { failed++; } }
       await refreshWorkflowSidebar();
+      if (failed > 0) throw new Error(`${failed} of ${undos.length} could not be restored`);
     });
   }
 }
@@ -1358,9 +1376,21 @@ function installNativeMenuSuppressor() {
   _nativeMenuSuppressor.observe(document.body, { childList: true, subtree: true });
 }
 
+// Safety net for the native-menu suppressor: if some unexpected error skips
+// removeContextMenu(), this guarantees "wfo-menu-open" (which hides every
+// native context menu app-wide) never gets stuck past a few seconds.
+let _wfoMenuOpenSafetyTimer = null;
+
+function markMenuOpen() {
+  document.body.classList.add("wfo-menu-open");
+  clearTimeout(_wfoMenuOpenSafetyTimer);
+  _wfoMenuOpenSafetyTimer = setTimeout(() => document.body.classList.remove("wfo-menu-open"), 8000);
+}
+
 function removeContextMenu() {
   if (contextMenu) { contextMenu.remove(); contextMenu = null; }
   document.body.classList.remove("wfo-menu-open");
+  clearTimeout(_wfoMenuOpenSafetyTimer);
 }
 
 // Windows-reserved device names — can't be used as a file/folder name even
@@ -1447,7 +1477,7 @@ function makeContextItem(icon, label, onPick, danger = false) {
 function showContextMenu(e, item) {
   removeContextMenu();
   installNativeMenuSuppressor();
-  document.body.classList.add("wfo-menu-open");
+  markMenuOpen();
   const menu = document.createElement("div");
   menu.className = "wfo-context-menu wfo-standalone";
 
@@ -1535,7 +1565,7 @@ function showContextMenu(e, item) {
 function showFolderContextMenu(e, item) {
   removeContextMenu();
   installNativeMenuSuppressor();
-  document.body.classList.add("wfo-menu-open");
+  markMenuOpen();
   const menu = document.createElement("div");
   menu.className = "wfo-context-menu wfo-standalone";
 
@@ -2451,6 +2481,13 @@ async function resetAllFolders() {
   registerUndo("Cleared all folder colors", () => bulkSetColors(prev));
 }
 
+// Module-level so re-mounts of the Workflows tab (rerenderWorkflowSidebar
+// unmounts/remounts the panel with a fresh dataset, so the per-panel init
+// guard doesn't catch this) don't pile up duplicate listeners/observers on
+// the ancestor "shell" element and the tree, which is typically NOT
+// recreated across remounts.
+let _wfoTreeObserver = null;
+
 app.registerExtension({
   name: EXTENSION_NAME,
   async setup() {
@@ -2481,15 +2518,22 @@ app.registerExtension({
           p = p.parentElement;
         }
         // Item handlers set itemContextActive; if they did, this was on an item.
-        shell.addEventListener("contextmenu", (e) => {
-          try {
-            if (itemContextActive) { itemContextActive = false; return; }
-            if (e.target.closest("input, textarea, button, [role='treeitem'], .p-inputtext, [class*='search']")) return;
-            e.preventDefault();
-            showEmptyAreaMenu(e);
-          } catch (_) {}
-        });
-        const treeObserver = new MutationObserver(() => {
+        // shell often survives across sidebar remounts, so guard with a dataset
+        // flag (not just the panel's own init guard) to avoid stacking a fresh
+        // listener on the same element every remount.
+        if (!shell.dataset.wfoShellBound) {
+          shell.dataset.wfoShellBound = "1";
+          shell.addEventListener("contextmenu", (e) => {
+            try {
+              if (itemContextActive) { itemContextActive = false; return; }
+              if (e.target.closest("input, textarea, button, [role='treeitem'], .p-inputtext, [class*='search']")) return;
+              e.preventDefault();
+              showEmptyAreaMenu(e);
+            } catch (_) {}
+          });
+        }
+        if (_wfoTreeObserver) _wfoTreeObserver.disconnect();
+        _wfoTreeObserver = new MutationObserver(() => {
           try {
             attachDragHandlers(panel);
             applyPlaceholderBadges(panel);
@@ -2501,7 +2545,7 @@ app.registerExtension({
             console.warn("[WFO] treeObserver error, continuing:", err);
           }
         });
-        treeObserver.observe(panel, { childList: true, subtree: true });
+        _wfoTreeObserver.observe(panel, { childList: true, subtree: true });
       }
       } catch (err) {
         console.warn("[WFO] bodyObserver error, continuing:", err);
