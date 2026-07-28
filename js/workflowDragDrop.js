@@ -97,9 +97,7 @@ async function deleteUserDataFile(path) {
 }
 
 function isFolder(el) {
-  if (el.classList.contains("p-tree-node-leaf")) return false;
-  const icon = el.querySelector(".pi-folder, .pi-folder-open");
-  return !!icon || !el.classList.contains("p-tree-node-leaf");
+  return !el.classList.contains("p-tree-node-leaf");
 }
 
 function isFile(el) {
@@ -174,7 +172,15 @@ async function syncWorkflowStore() {
 async function rerenderWorkflowSidebar() {
   const allBtns = document.querySelectorAll(".sidebar-icon-wrapper");
   const workflowBtn = [...allBtns].find((b) => b.querySelector("[class*='comfy--workflow'], [title*='orkflow']"));
-  const otherBtn = [...allBtns].find((b) => b !== workflowBtn);
+  // Prefer a known native ComfyUI tab (Node Library / Assets / Model Library)
+  // over an arbitrary "other" button — the DOM order of sidebar icons depends
+  // on which third-party extensions are installed, and switching to one of
+  // theirs can trigger its own tab-activation side effects (loads, analytics,
+  // auth flows) that a core tab won't have.
+  const candidates = [...allBtns].filter((b) => b !== workflowBtn);
+  const nativeNames = /node library|assets|model library/i;
+  const otherBtn = candidates.find((b) => nativeNames.test(b.title || b.getAttribute("aria-label") || ""))
+    || candidates[0];
   if (workflowBtn && otherBtn) {
     otherBtn.click();
     await new Promise((r) => setTimeout(r, 80));
@@ -189,6 +195,19 @@ function storeWorkflowPath(rel) {
   return `workflows/${rel.replace(/\.json$/, "")}.json`;
 }
 
+// A folder treeitem only renders a [role="group"] child-list while expanded
+// (PrimeVue removes it from the DOM entirely when collapsed, rather than just
+// hiding it) — so its absence is how we tell "collapsed" apart from "missing".
+function folderIsCollapsed(folderPath) {
+  const panel = findWorkflowsPanel();
+  if (!panel) return false;
+  for (const el of panel.querySelectorAll("[role='treeitem']")) {
+    if (el.classList.contains("p-tree-node-leaf")) continue;
+    if (buildPath(el) === folderPath) return !el.querySelector("[role='group']");
+  }
+  return false; // parent folder not found in the DOM either — can't confirm collapse
+}
+
 // Is a workflow with this store-path currently rendered in the tree? (Collapsed
 // folders hide their children, so this only answers for what should be visible.)
 function isWorkflowInDom(storePath) {
@@ -198,6 +217,12 @@ function isWorkflowInDom(storePath) {
     if (!el.classList.contains("p-tree-node-leaf")) continue;
     if (storeWorkflowPath(buildPath(el)) === storePath) return true;
   }
+  // Not rendered — but that's expected, not stale, if the immediate parent
+  // folder is currently collapsed (a very common case for a rename deep in
+  // the tree), so don't force a full re-mount over it.
+  const relPath = storePath.replace(/^workflows\//, "").replace(/\.json$/, "");
+  const slash = relPath.lastIndexOf("/");
+  if (slash !== -1 && folderIsCollapsed(relPath.slice(0, slash))) return true;
   return false;
 }
 
@@ -282,6 +307,18 @@ function selectRange(container, fromPath, toPath) {
   for (let k = lo; k <= hi; k++) selectedPaths.add(order[k]);
 }
 
+// True only for OUR server-managed placeholder.json — not just any workflow a
+// user happens to have literally named "placeholder". placeholderOnlyFolders
+// (populated from a real directory listing) tells us which parent folders
+// actually contain nothing but a placeholder.json, so a same-named real
+// workflow sharing a folder with other files is never mistaken for one.
+function isPlaceholderItem(item) {
+  if (getLabel(item) !== "placeholder") return false;
+  const parentFolder = item.parentElement?.closest("[role='treeitem']");
+  const parentLabel = parentFolder ? getLabel(parentFolder) : "";
+  return placeholderOnlyFolders.has(parentLabel);
+}
+
 // Resolve a workflow-file tree item from an event target, if it's one of ours.
 function fileItemFromEvent(e) {
   const t = e.target;
@@ -290,7 +327,7 @@ function fileItemFromEvent(e) {
   if (!item || !item.classList.contains("p-tree-node-leaf")) return null;
   const panel = findWorkflowsPanel();
   if (!panel || !panel.contains(item)) return null;
-  if (getLabel(item) === "placeholder") return null;
+  if (isPlaceholderItem(item)) return null;
   return { item, panel };
 }
 
@@ -1124,6 +1161,7 @@ async function performFileMoves(filePaths, destRel) {
   const undos = [];
   const colorRemaps = [];
   const skipped = [];
+  let movedRealPlaceholder = false;
   for (const rel of filePaths) {
     const fileName = rel.split("/").pop();
     const src = `workflows/${rel}.json`;
@@ -1135,9 +1173,15 @@ async function performFileMoves(filePaths, destRel) {
       undos.push([dst, src]);
       await remapFileColor(rel, newRel);
       colorRemaps.push([rel, newRel]);
+      if (fileName === "placeholder") movedRealPlaceholder = true;
     } catch (_) { skipped.push(fileName); }
   }
-  if (destRel) { try { await deleteUserDataFile(`workflows/${destRel}/placeholder.json`); } catch (_) {} }
+  // Skip if a moved file is itself literally named "placeholder" — its
+  // destination path IS workflows/{destRel}/placeholder.json, so this cleanup
+  // would otherwise delete the file we just moved in, not a stale stub.
+  if (destRel && !movedRealPlaceholder) {
+    try { await deleteUserDataFile(`workflows/${destRel}/placeholder.json`); } catch (_) {}
+  }
   await refreshWorkflowSidebar();
   if (undos.length) {
     const label = undos.length === 1 ? "workflow" : "workflows";
@@ -1263,7 +1307,12 @@ async function moveFileToFolder(item, destRel) {
   const newColorRel = (destRel ? destRel + "/" : "") + baseLabel;
   try {
     await moveUserDataFile(src, dst);
-    if (destRel) await deleteUserDataFile(`workflows/${destRel}/placeholder.json`);
+    // Skip if the moved file is itself literally named "placeholder.json" —
+    // its destination path IS this cleanup target, so deleting it here would
+    // delete the file we just moved in, not a stale stub.
+    if (destRel && fileName !== "placeholder.json") {
+      await deleteUserDataFile(`workflows/${destRel}/placeholder.json`);
+    }
     await remapFileColor(oldColorRel, newColorRel);
     try { app.extensionManager?.toast?.add({ severity: "success", summary: "Workflow moved", detail: destRel || "Root", life: 3000 }); } catch (_) {}
     await refreshWorkflowSidebar();
@@ -1711,7 +1760,7 @@ function attachDragHandlers(container) {
     if (!contentEl) return;
 
     if (isFile(item)) {
-      if (getLabel(item) === "placeholder") {
+      if (isPlaceholderItem(item)) {
         item.style.display = "none";
         const parentFolder = item.parentElement?.closest("[role='treeitem']");
         if (parentFolder) {
@@ -2323,23 +2372,14 @@ function ensurePlaceholders() {
 
 async function loadPlaceholderFolders() {
   try {
-    const resp = await api.fetchApi("/userdata?dir=workflows&recurse=true&split=false");
+    // Server verifies by file CONTENT (the {"wfo_placeholder": true} marker),
+    // not just the filename — a real user workflow that happens to be named
+    // "placeholder" alone in its folder is otherwise indistinguishable from
+    // ours by name/listing alone.
+    const resp = await api.fetchApi("/wfo/ensure-placeholders", { method: "POST" });
     if (!resp.ok) return;
-    const files = await resp.json();
-    const folderFiles = {};
-    for (const f of files) {
-      const rel = f.replace(/^workflows\//, "");
-      const parts = rel.split("/");
-      if (parts.length < 2) continue;
-      const key = parts.slice(0, parts.length - 1).join("/");
-      if (!folderFiles[key]) folderFiles[key] = [];
-      folderFiles[key].push(parts[parts.length - 1]);
-    }
-    placeholderOnlyFolders = new Set(
-      Object.entries(folderFiles)
-        .filter(([, fs]) => fs.length === 1 && fs[0] === "placeholder.json")
-        .map(([key]) => key.split("/").pop())
-    );
+    const { placeholder_only } = await resp.json();
+    placeholderOnlyFolders = new Set((placeholder_only || []).map((rel) => rel.split("/").pop()));
   } catch (_) {}
 }
 
@@ -2367,7 +2407,7 @@ async function loadFileColors() {
 function applyFileColors(panel) {
   panel.querySelectorAll("[role='treeitem']").forEach((el) => {
     if (!el.classList.contains("p-tree-node-leaf")) return;
-    if (getLabel(el) === "placeholder") return;
+    if (isPlaceholderItem(el)) return;
     const icon = el.querySelector(".pi-file, [class*='pi-file']");
     if (!icon) return;
     const color = fileColors[buildPath(el)];
