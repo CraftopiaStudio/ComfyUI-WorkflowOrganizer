@@ -1744,7 +1744,26 @@ function showFolderContextMenu(e, item) {
 }
 
 function findWorkflowsPanel() {
+  // ComfyUI now renders a separate "Bookmarks" mini-tree above the main
+  // "Browse" folder tree — its own [role='treeitem']s, its own .p-tree. The
+  // old "just take the first treeitem on the page" heuristic would often land
+  // on that bookmarks-only tree instead, silently sending every subsequent
+  // color/badge/refresh update to a panel with no folders in it. Prefer the
+  // Browse tree explicitly by its semantic wrapper class.
+  const browseTree = document.querySelector(".comfyui-workflows-browse .p-tree, .comfyui-workflows-browse[class*='tree']");
+  if (browseTree) return browseTree;
+
+  // Fallback 1: pick whichever tree actually contains a folder — a
+  // bookmarks-only tree never does, so this still avoids the wrong panel
+  // even if the wrapper class above ever changes.
   const treeItems = document.querySelectorAll("[role='treeitem']");
+  for (const item of treeItems) {
+    if (!item.classList.contains("p-tree-node-leaf")) {
+      return item.closest(".p-tree") || item.closest("[class*='tree']") || item.parentElement;
+    }
+  }
+
+  // Fallback 2: original heuristic, for a still-unknown future DOM shape.
   if (treeItems.length > 0) {
     const first = treeItems[0];
     return first.closest(".p-tree") || first.closest("[class*='tree']") || first.parentElement;
