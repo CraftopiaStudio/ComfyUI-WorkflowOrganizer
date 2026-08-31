@@ -4,9 +4,11 @@ description = "Drag-and-drop workflow organization for the ComfyUI sidebar"
 version = "1.0.4"
 license = { file = "LICENSE" }
 dependencies = []
+keywords = ["comfyui", "workflow", "sidebar", "drag-and-drop", "organization"]
 
 [project.urls]
 Repository = "https://github.com/CraftopiaStudio/ComfyUI-WorkflowOrganizer"
+Issues = "https://github.com/CraftopiaStudio/ComfyUI-WorkflowOrganizer/issues"
 
 [tool.comfy]
 PublisherId = "craftopiastudio"
