@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-workfloworganizer"
 description = "Drag-and-drop workflow organization for the ComfyUI sidebar"
-version = "1.0.4"
+version = "1.0.5"
 license = { file = "LICENSE" }
 dependencies = []
 keywords = ["comfyui", "workflow", "sidebar", "drag-and-drop", "organization"]

@@ -96,16 +96,59 @@ async function deleteUserDataFile(path) {
   }
 }
 
-function isFolder(el) {
-  return !el.classList.contains("p-tree-node-leaf");
-}
-
+// The Workflows tree exists in two DOM shapes. Newer frontends (reka-ui) render
+// a flat list of <li role="treeitem"> where nesting is only expressed through
+// aria-level and the type through data-tree-node-type. Older ones (PrimeVue)
+// nest children in [role="group"] and mark leaves with .p-tree-node-leaf.
+// Everything below goes through these helpers so both keep working.
 function isFile(el) {
+  const type = el.dataset?.treeNodeType;
+  if (type) return type === "node";
   return el.classList.contains("p-tree-node-leaf");
 }
 
+function isFolder(el) {
+  return !isFile(el);
+}
+
+// The element that is the clickable/draggable row of a tree item.
+function itemRow(el) {
+  return el.querySelector(".p-tree-node-content") || el;
+}
+
+function labelElOf(el) {
+  return el.querySelector(".p-tree-node-label, .node-label");
+}
+
+// The folder's child-count pill, shown next to its name.
+function countBadgeOf(folderItem) {
+  return folderItem.querySelector(
+    ".p-tree-node-label .p-badge, .p-tree-node-label [class*='badge'], [data-testid='tree-leaf-count']"
+  );
+}
+
+function isExpanded(folderItem) {
+  const attr = folderItem.getAttribute("aria-expanded");
+  if (attr !== null) return attr === "true";
+  return !!folderItem.querySelector("[role='group']");
+}
+
+function parentItem(el) {
+  const nested = el.parentElement?.closest("[role='treeitem']");
+  if (nested) return nested;
+  const level = parseInt(el.getAttribute("aria-level"), 10);
+  if (!(level > 1)) return null;
+  // Flat layout: items are listed depth-first, so the closest preceding item
+  // with a lower level is the parent.
+  for (let s = el.previousElementSibling; s; s = s.previousElementSibling) {
+    if (s.getAttribute("role") !== "treeitem") continue;
+    if (parseInt(s.getAttribute("aria-level"), 10) < level) return s;
+  }
+  return null;
+}
+
 function getLabel(el) {
-  const labelEl = el.querySelector(".p-tree-node-label");
+  const labelEl = labelElOf(el);
   if (!labelEl) return null;
   const clone = labelEl.cloneNode(true);
   clone.querySelectorAll("span.p-badge, [class*='badge']").forEach((b) => b.remove());
@@ -118,12 +161,7 @@ function buildPath(el) {
   while (current) {
     const label = getLabel(current);
     if (label) parts.unshift(label);
-    const group = current.parentElement?.closest("[role='group']");
-    if (group) {
-      current = group.closest("[role='treeitem']");
-    } else {
-      break;
-    }
+    current = parentItem(current);
   }
   return parts.join("/");
 }
@@ -195,15 +233,14 @@ function storeWorkflowPath(rel) {
   return `workflows/${rel.replace(/\.json$/, "")}.json`;
 }
 
-// A folder treeitem only renders a [role="group"] child-list while expanded
-// (PrimeVue removes it from the DOM entirely when collapsed, rather than just
-// hiding it) — so its absence is how we tell "collapsed" apart from "missing".
+// Collapsed folders don't render their children at all, which is how we tell
+// "collapsed" apart from "missing".
 function folderIsCollapsed(folderPath) {
   const panel = findWorkflowsPanel();
   if (!panel) return false;
   for (const el of panel.querySelectorAll("[role='treeitem']")) {
-    if (el.classList.contains("p-tree-node-leaf")) continue;
-    if (buildPath(el) === folderPath) return !el.querySelector("[role='group']");
+    if (isFile(el)) continue;
+    if (buildPath(el) === folderPath) return !isExpanded(el);
   }
   return false; // parent folder not found in the DOM either — can't confirm collapse
 }
@@ -214,7 +251,7 @@ function isWorkflowInDom(storePath) {
   const panel = findWorkflowsPanel();
   if (!panel) return true; // can't tell — assume yes, don't force a re-render
   for (const el of panel.querySelectorAll("[role='treeitem']")) {
-    if (!el.classList.contains("p-tree-node-leaf")) continue;
+    if (!isFile(el)) continue;
     if (storeWorkflowPath(buildPath(el)) === storePath) return true;
   }
   // Not rendered — but that's expected, not stale, if the immediate parent
@@ -276,7 +313,7 @@ let selectionAnchor = null;      // path of the last clicked item, for shift-ran
 // Ordered list of visible workflow-file paths in the tree (for shift-range).
 function getOrderedFilePaths(container) {
   return [...container.querySelectorAll("[role='treeitem']")]
-    .filter((el) => el.classList.contains("p-tree-node-leaf") && el.style.display !== "none")
+    .filter((el) => isFile(el) && el.style.display !== "none")
     .map((el) => buildPath(el))
     .filter(Boolean);
 }
@@ -291,10 +328,8 @@ function clearSelection(container) {
 
 function applySelectionStyles(container) {
   container.querySelectorAll("[role='treeitem']").forEach((el) => {
-    if (!el.classList.contains("p-tree-node-leaf")) return;
-    const content = el.querySelector(".p-tree-node-content");
-    if (!content) return;
-    content.classList.toggle("wfo-selected", selectedPaths.has(buildPath(el)));
+    if (!isFile(el)) return;
+    itemRow(el).classList.toggle("wfo-selected", selectedPaths.has(buildPath(el)));
   });
 }
 
@@ -314,7 +349,7 @@ function selectRange(container, fromPath, toPath) {
 // workflow sharing a folder with other files is never mistaken for one.
 function isPlaceholderItem(item) {
   if (getLabel(item) !== "placeholder") return false;
-  const parentFolder = item.parentElement?.closest("[role='treeitem']");
+  const parentFolder = parentItem(item);
   const parentLabel = parentFolder ? getLabel(parentFolder) : "";
   return placeholderOnlyFolders.has(parentLabel);
 }
@@ -324,7 +359,7 @@ function fileItemFromEvent(e) {
   const t = e.target;
   if (!t || !t.closest) return null;
   const item = t.closest("[role='treeitem']");
-  if (!item || !item.classList.contains("p-tree-node-leaf")) return null;
+  if (!item || !isFile(item)) return null;
   const panel = findWorkflowsPanel();
   if (!panel || !panel.contains(item)) return null;
   if (isPlaceholderItem(item)) return null;
@@ -432,8 +467,8 @@ function showRootDropBar(panel) {
 
   // Only meaningful when there are folders to drag out of
   const allItems = [...panel.querySelectorAll("[role='treeitem']")];
-  const rootItems = allItems.filter(el => !el.parentElement?.closest("[role='treeitem']"));
-  const hasFolders = rootItems.some(el => !el.classList.contains("p-tree-node-leaf"));
+  const rootItems = allItems.filter(el => !parentItem(el));
+  const hasFolders = rootItems.some(el => isFolder(el));
   if (!hasFolders) return;
 
   // 0-height sticky wrapper so it overlays without pushing content down
@@ -573,7 +608,7 @@ function applyNativeMenuFont(menuEl, realMenu) {
 }
 
 function inlineRenameInTree(folderItem, onConfirm) {
-  const labelEl = folderItem.querySelector(".p-tree-node-label");
+  const labelEl = labelElOf(folderItem);
   if (!labelEl) return;
 
   const currentText = getLabel(folderItem);
@@ -1750,24 +1785,23 @@ function findWorkflowsPanel() {
   // on that bookmarks-only tree instead, silently sending every subsequent
   // color/badge/refresh update to a panel with no folders in it. Prefer the
   // Browse tree explicitly by its semantic wrapper class.
-  const browseTree = document.querySelector(".comfyui-workflows-browse .p-tree, .comfyui-workflows-browse[class*='tree']");
+  const browseTree = document.querySelector(
+    ".comfyui-workflows-browse .p-tree, .comfyui-workflows-browse [role='tree'], .comfyui-workflows-browse[class*='tree']"
+  );
   if (browseTree) return browseTree;
 
   // Fallback 1: pick whichever tree actually contains a folder — a
   // bookmarks-only tree never does, so this still avoids the wrong panel
   // even if the wrapper class above ever changes.
+  const treeContainerOf = (item) =>
+    item.closest(".p-tree, [role='tree']") || item.closest("[class*='tree']") || item.parentElement;
   const treeItems = document.querySelectorAll("[role='treeitem']");
   for (const item of treeItems) {
-    if (!item.classList.contains("p-tree-node-leaf")) {
-      return item.closest(".p-tree") || item.closest("[class*='tree']") || item.parentElement;
-    }
+    if (isFolder(item)) return treeContainerOf(item);
   }
 
   // Fallback 2: original heuristic, for a still-unknown future DOM shape.
-  if (treeItems.length > 0) {
-    const first = treeItems[0];
-    return first.closest(".p-tree") || first.closest("[class*='tree']") || first.parentElement;
-  }
+  if (treeItems.length > 0) return treeContainerOf(treeItems[0]);
   return null;
 }
 
@@ -1775,15 +1809,14 @@ function attachDragHandlers(container) {
   container.querySelectorAll("[role='treeitem']").forEach((item) => {
     if (item.dataset.wfoDrag === "1") return;
     item.dataset.wfoDrag = "1";
-    const contentEl = item.querySelector(".p-tree-node-content");
-    if (!contentEl) return;
+    const contentEl = itemRow(item);
 
     if (isFile(item)) {
       if (isPlaceholderItem(item)) {
         item.style.display = "none";
-        const parentFolder = item.parentElement?.closest("[role='treeitem']");
+        const parentFolder = parentItem(item);
         if (parentFolder) {
-          const badge = parentFolder.querySelector(".p-tree-node-label .p-badge, .p-tree-node-label [class*='badge']");
+          const badge = countBadgeOf(parentFolder);
           if (badge) {
             const n = parseInt(badge.textContent, 10);
             if (!isNaN(n)) {
@@ -2405,13 +2438,23 @@ async function loadPlaceholderFolders() {
 function applyPlaceholderBadges(panel) {
   const allItems = [...panel.querySelectorAll("[role='treeitem']")];
   for (const item of allItems) {
-    if (item.classList.contains("p-tree-node-leaf")) continue;
+    if (isFile(item)) continue;
     const label = getLabel(item);
     if (!label) continue;
-    const badge = item.querySelector(".p-tree-node-label .p-badge, .p-tree-node-label [class*='badge']");
+    const badge = countBadgeOf(item);
     if (!badge) continue;
     badge.style.display = placeholderOnlyFolders.has(label) ? "none" : "";
   }
+}
+
+// Only writes when the color actually needs (re)applying: the tree observer
+// also watches inline style changes (the frontend re-renders tree rows and
+// wipes our inline color), and an unconditional write would retrigger it.
+function setIconColor(icon, color) {
+  const want = color || "";
+  if (icon.dataset.wfoColor === want && (!want || icon.style.color)) return;
+  icon.style.color = want;
+  icon.dataset.wfoColor = want;
 }
 
 // Map of file rel-path → hex color
@@ -2425,12 +2468,11 @@ async function loadFileColors() {
 
 function applyFileColors(panel) {
   panel.querySelectorAll("[role='treeitem']").forEach((el) => {
-    if (!el.classList.contains("p-tree-node-leaf")) return;
+    if (!isFile(el)) return;
     if (isPlaceholderItem(el)) return;
     const icon = el.querySelector(".pi-file, [class*='pi-file']");
     if (!icon) return;
-    const color = fileColors[buildPath(el)];
-    icon.style.color = color || "";
+    setIconColor(icon, fileColors[buildPath(el)]);
   });
 }
 
@@ -2487,11 +2529,11 @@ function setFilledMode(on) {
 function applyFolderColors(panel) {
   const filled = getFilledMode();
   panel.querySelectorAll("[role='treeitem']").forEach((el) => {
-    if (el.classList.contains("p-tree-node-leaf")) return;
+    if (isFile(el)) return;
     const icon = el.querySelector(".pi-folder, .pi-folder-open");
     if (!icon) return;
     const color = folderColors[buildPath(el)];
-    icon.style.color = color || "";
+    setIconColor(icon, color);
     icon.classList.toggle("wfo-folder-filled", !!color && filled);
   });
 }
@@ -2604,7 +2646,7 @@ app.registerExtension({
             console.warn("[WFO] treeObserver error, continuing:", err);
           }
         });
-        _wfoTreeObserver.observe(panel, { childList: true, subtree: true });
+        _wfoTreeObserver.observe(panel, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
       }
       } catch (err) {
         console.warn("[WFO] bodyObserver error, continuing:", err);
